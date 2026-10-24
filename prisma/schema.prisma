@@ -1,0 +1,261 @@
+// ============================================================================
+// Pigment ERP - Prisma schema.
+//
+// Local development runs against a PostgreSQL database on this machine;
+// production runs on Neon. DATABASE_URL is the connection the app uses (Neon's
+// -pooler endpoint in production), DIRECT_URL the unpooled one Prisma Migrate
+// needs. Schema changes go through `prisma migrate dev` locally and
+// `prisma migrate deploy` against Neon.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum FormulaType {
+  LIQUID_VEIN
+  DRY_VEIN_PIGMENT
+  OTHERS
+}
+
+enum MeasurementUnit {
+  KG
+  GM
+}
+
+// ---------------------------------------------------------------------------
+// Materials / colours
+//
+// Every material or colour name ever entered on a formula. Feeds the
+// "Material/Color Name" suggestions. `nameKey` is the trimmed, lower-cased
+// name, so "SP Yellow" and "sp yellow " are one material.
+// ---------------------------------------------------------------------------
+model Material {
+  id        String   @id @default(cuid())
+  name      String
+  nameKey   String   @unique @map("name_key")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  formulaItems FormulaItem[]
+
+  @@map("materials")
+}
+
+// ---------------------------------------------------------------------------
+// Formulas
+//
+// The calculated figures (total used, consumption rate, each item's required
+// quantity) are recomputed on the server at save time from the entered
+// quantities and stored, so a report reads exactly what the sheet showed.
+// ---------------------------------------------------------------------------
+model Formula {
+  id          String      @id @default(cuid())
+  date        DateTime    @db.Date
+  serialNo    Int         @unique @map("serial_no")
+  formulaType FormulaType @map("formula_type")
+  name        String
+  nameKey     String      @unique @map("name_key")
+
+  mixingHours   Int @default(0) @map("mixing_hours")
+  mixingMinutes Int @default(0) @map("mixing_minutes")
+
+  totalQuantityUsedKg     Decimal @map("total_quantity_used_kg") @db.Decimal(18, 6)
+  totalQuantityRequiredKg Decimal @map("total_quantity_required_kg") @db.Decimal(18, 3)
+  consumptionRate         Decimal @map("consumption_rate") @db.Decimal(18, 3)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  items              FormulaItem[]       @relation("FormulaItems")
+  usedAsItemIn       FormulaItem[]       @relation("ComponentFormula")
+  productionPigments ProductionPigment[]
+
+  @@index([date])
+  @@map("formulas")
+}
+
+// One row of a formula's "Materials / Colors Used" table. Exactly one of
+// materialId / componentFormulaId is set: a row is either a plain material or
+// a previously saved formula used as an ingredient. `name` keeps the name as
+// it was entered so the row reads the same even if the source is renamed.
+model FormulaItem {
+  id        String          @id @default(cuid())
+  formulaId String          @map("formula_id")
+  lineNo    Int             @map("line_no")
+  name      String
+  unit      MeasurementUnit
+  quantity  Decimal         @db.Decimal(18, 3)
+
+  requiredQuantity Decimal @map("required_quantity") @db.Decimal(18, 3)
+
+  materialId         String? @map("material_id")
+  componentFormulaId String? @map("component_formula_id")
+
+  formula          Formula   @relation("FormulaItems", fields: [formulaId], references: [id], onDelete: Cascade)
+  material         Material? @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  componentFormula Formula?  @relation("ComponentFormula", fields: [componentFormulaId], references: [id], onDelete: Restrict)
+
+  @@unique([formulaId, lineNo])
+  @@index([materialId])
+  @@index([componentFormulaId])
+  @@map("formula_items")
+}
+
+// ============================================================================
+// Pigment Packing Details — Daily Production
+//
+// One ProductionRecord per Daily Production form. It holds one
+// ProductionMixer per mixer used (Mixer-1, Mixer-2, Roymix, in that order).
+// Each mixer has its pigment/colour rows, its materials consumption rows and,
+// when the cycle time changed, one ProductionCycleChange per cycle range with
+// that range's own pigment rows.
+// ============================================================================
+
+enum MixerType {
+  MIXER_1
+  MIXER_2
+  ROYMIX
+}
+
+model ProductionRecord {
+  id          String   @id @default(cuid())
+  date        DateTime @db.Date
+  serialNo    Int      @unique @map("serial_no")
+  batchNumber String   @map("batch_number")
+  locNumber   String   @map("loc_number")
+  designName  String   @map("design_name")
+  totalCycles Int      @map("total_cycles")
+  mixersUsed  Int      @map("mixers_used")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  mixers ProductionMixer[]
+
+  @@index([date])
+  @@index([batchNumber])
+  @@map("production_records")
+}
+
+model ProductionMixer {
+  id               String    @id @default(cuid())
+  recordId         String    @map("record_id")
+  mixer            MixerType
+  cycleTimeChanged Boolean   @default(false) @map("cycle_time_changed")
+  changeCount      Int       @default(0) @map("change_count")
+
+  record       ProductionRecord        @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  pigments     ProductionPigment[]
+  cycleChanges ProductionCycleChange[]
+  materials    ProductionMaterial[]
+
+  @@unique([recordId, mixer])
+  @@map("production_mixers")
+}
+
+// One cycle range after a cycle-time change ("Second Time: Cycles 6–18").
+model ProductionCycleChange {
+  id        String @id @default(cuid())
+  mixerId   String @map("mixer_id")
+  seq       Int
+  fromCycle Int    @map("from_cycle")
+  toCycle   Int    @map("to_cycle")
+
+  mixer    ProductionMixer     @relation(fields: [mixerId], references: [id], onDelete: Cascade)
+  pigments ProductionPigment[]
+
+  @@unique([mixerId, seq])
+  @@map("production_cycle_changes")
+}
+
+// A pigment/colour row. cycleChangeId null → the mixer's own Pigment/Color
+// Details table; set → that cycle range's rows. formulaId is set when the
+// name is a saved formula (matched on name, case-insensitive, at save time).
+model ProductionPigment {
+  id            String          @id @default(cuid())
+  mixerId       String          @map("mixer_id")
+  cycleChangeId String?         @map("cycle_change_id")
+  lineNo        Int             @map("line_no")
+  name          String
+  nameKey       String          @map("name_key")
+  unit          MeasurementUnit
+  quantity      Decimal         @db.Decimal(18, 3)
+  formulaId     String?         @map("formula_id")
+
+  mixer       ProductionMixer        @relation(fields: [mixerId], references: [id], onDelete: Cascade)
+  cycleChange ProductionCycleChange? @relation(fields: [cycleChangeId], references: [id], onDelete: Cascade)
+  formula     Formula?               @relation(fields: [formulaId], references: [id], onDelete: Restrict)
+
+  @@index([mixerId])
+  @@index([cycleChangeId])
+  @@index([formulaId])
+  @@index([nameKey])
+  @@map("production_pigments")
+}
+
+// Materials consumption. The six standard materials (Grit … Silane) are
+// isStandard; "+ Add/Others" rows are not. Only rows with a quantity are saved.
+model ProductionMaterial {
+  id         String          @id @default(cuid())
+  mixerId    String          @map("mixer_id")
+  lineNo     Int             @map("line_no")
+  name       String
+  nameKey    String          @map("name_key")
+  isStandard Boolean         @default(false) @map("is_standard")
+  unit       MeasurementUnit
+  quantity   Decimal         @db.Decimal(18, 3)
+
+  mixer ProductionMixer @relation(fields: [mixerId], references: [id], onDelete: Cascade)
+
+  @@index([mixerId])
+  @@index([nameKey])
+  @@map("production_materials")
+}
+
+// ============================================================================
+// Stocks and Consumption — pigment/colour stock
+//
+// Only pigments/colours carry stock. A PigmentStock is one pigment (matched
+// to formulas and production records on nameKey); every "+ Add" of a
+// quantity is a PigmentStockEntry, so Total Stock = the sum of its entries.
+// Consumption is NOT stored here: it is computed from the saved Formula and
+// Daily Production records (lib/stock), so it can never drift from them.
+// Materials (Grit, Resin, …) have no stock — consumption only.
+// ============================================================================
+
+model PigmentStock {
+  id        String   @id @default(cuid())
+  name      String
+  nameKey   String   @unique @map("name_key")
+  /// Swatch colour for the palette, #rrggbb.
+  color     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  entries PigmentStockEntry[]
+
+  @@map("pigment_stocks")
+}
+
+model PigmentStockEntry {
+  id         String          @id @default(cuid())
+  pigmentId  String          @map("pigment_id")
+  date       DateTime        @db.Date
+  /// As entered.
+  unit       MeasurementUnit
+  quantity   Decimal         @db.Decimal(18, 3)
+  /// The same quantity in kg — what every stock figure is summed from.
+  quantityKg Decimal         @map("quantity_kg") @db.Decimal(18, 6)
+  createdAt  DateTime        @default(now()) @map("created_at")
+
+  pigment PigmentStock @relation(fields: [pigmentId], references: [id], onDelete: Cascade)
+
+  @@index([pigmentId])
+  @@map("pigment_stock_entries")
+}

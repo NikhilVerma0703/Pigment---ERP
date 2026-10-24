@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #eef1f4;
+  --fg: #0f1720;
+  /* Light-only, like Pacific ERP: stops dark-mode devices from darkening
+   * form controls and scrollbars on their own. */
+  color-scheme: light;
+}
+
+html, body { max-width: 100vw; }
+
+body {
+  background:
+    radial-gradient(1200px 600px at 100% -10%, rgba(15,76,92,0.06), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(15,76,92,0.05), transparent 55%),
+    var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+@layer components {
+  .field-label { @apply mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-600; }
+  .field-input {
+    @apply block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm outline-none transition placeholder:text-gray-400 focus:border-brand-500 focus:ring-2 focus:ring-brand-200 disabled:bg-gray-100;
+  }
+  .field-input[aria-invalid="true"] { @apply border-red-400 focus:border-red-500 focus:ring-red-100; }
+  .field-error { @apply mt-1 text-xs text-red-600; }
+  .card { @apply rounded-card border border-gray-200/80 bg-white shadow-sm; }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+}
