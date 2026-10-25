@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { ConsumptionTrendChart, MostConsumedChart, StockComparisonChart } from "@/components/stock/ConsumptionCharts";
 import { MaterialsConsumption } from "@/components/stock/MaterialsConsumption";
+import { LowStockAlerts } from "@/components/stock/LowStockAlerts";
 import { StockEntryForm } from "@/components/stock/StockEntryForm";
 import { StockPalette, StockTable, UntrackedNotice } from "@/components/stock/StockOverview";
 import { AnalyticsRangeSelect } from "@/components/stock/AnalyticsRangeSelect";
@@ -54,6 +55,15 @@ export default async function StocksConsumptionPage({
           All figures in kg. Formulas consume each row&apos;s Required Quantity; Daily Production consumes the per-cycle
           quantity × the cycles it ran.
         </p>
+      </section>
+
+      {/* Low stock alerts — pigments/colors only */}
+      <section className="card p-5">
+        <h2 className="text-base font-semibold text-pacific-dark">Low Stock Alerts</h2>
+        <p className="mb-4 mt-0.5 text-sm text-gray-600">
+          Pigments/colors only — production materials have no stock and no alerts.
+        </p>
+        <LowStockAlerts stocks={data.stocks} />
       </section>
 
       {/* 2. Materials — consumption only */}

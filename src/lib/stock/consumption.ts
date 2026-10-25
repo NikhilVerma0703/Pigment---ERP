@@ -23,6 +23,15 @@ export interface Usage {
   date: string;
   kg: number;
   source: "formula" | "production";
+  /** The quantity and unit as recorded (per cycle for production). */
+  quantity: number;
+  unit: Unit;
+  /** Production only: cycles the quantity was multiplied by. */
+  cycles: number | null;
+  /** Production only: the mixer, when the caller passed one. */
+  mixer: string | null;
+  /** Production only: the cycle range, or null for the base rows. */
+  range: { from: number; to: number } | null;
 }
 
 export interface QtyRow {
@@ -40,6 +49,7 @@ export interface ProductionForUsage {
   date: string;
   totalCycles: number;
   mixers: {
+    mixer?: string;
     cycleTimeChanged: boolean;
     pigments: QtyRow[];
     changes: { fromCycle: number; toCycle: number; pigments: QtyRow[] }[];
@@ -55,12 +65,30 @@ export function formulaUsage(f: FormulaForUsage): Usage[] {
     date: f.date,
     kg: kg6(toKg(i.requiredQuantity, i.unit)),
     source: "formula" as const,
+    quantity: i.requiredQuantity,
+    unit: i.unit,
+    cycles: null,
+    mixer: null,
+    range: null,
   }));
+}
+
+/** How many cycles each set of pigment rows ran for: the base rows, and each
+ *  cycle range in order. The one place the per-cycle rule lives. */
+export function cycleSpans(
+  totalCycles: number,
+  cycleTimeChanged: boolean,
+  changes: { fromCycle: number; toCycle: number }[],
+): { baseCycles: number; spans: number[] } {
+  if (!cycleTimeChanged || changes.length === 0) return { baseCycles: totalCycles, spans: [] };
+  const spans = changes.map((c) => Math.max(0, Math.min(c.toCycle, totalCycles) - c.fromCycle + 1));
+  const covered = spans.reduce((a, b) => a + b, 0);
+  return { baseCycles: Math.max(0, totalCycles - covered), spans };
 }
 
 export function productionPigmentUsage(p: ProductionForUsage): Usage[] {
   const out: Usage[] = [];
-  const add = (rows: QtyRow[], cycles: number) => {
+  const add = (rows: QtyRow[], cycles: number, mixer: string | undefined, range: Usage["range"]) => {
     if (cycles <= 0) return;
     for (const r of rows) {
       out.push({
@@ -69,22 +97,19 @@ export function productionPigmentUsage(p: ProductionForUsage): Usage[] {
         date: p.date,
         kg: kg6(toKg(r.quantity, r.unit) * cycles),
         source: "production",
+        quantity: r.quantity,
+        unit: r.unit,
+        cycles,
+        mixer: mixer ?? null,
+        range,
       });
     }
   };
 
   for (const m of p.mixers) {
-    if (!m.cycleTimeChanged || m.changes.length === 0) {
-      add(m.pigments, p.totalCycles);
-      continue;
-    }
-    let covered = 0;
-    for (const c of m.changes) {
-      const span = Math.max(0, Math.min(c.toCycle, p.totalCycles) - c.fromCycle + 1);
-      covered += span;
-      add(c.pigments, span);
-    }
-    add(m.pigments, Math.max(0, p.totalCycles - covered));
+    const { baseCycles, spans } = cycleSpans(p.totalCycles, m.cycleTimeChanged, m.changes);
+    m.changes.forEach((c, i) => add(c.pigments, spans[i], m.mixer, { from: c.fromCycle, to: c.toCycle }));
+    add(m.pigments, baseCycles, m.mixer, null);
   }
   return out;
 }

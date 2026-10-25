@@ -9,6 +9,29 @@ import { defaultSwatch } from "@/lib/stock/consumption";
 import { stockInputSchema } from "@/lib/stock/schema";
 import { cleanName, nameKey } from "@/lib/utils";
 
+/**
+ * MINIMUM STOCK LEVEL — sets (or, with "", clears) a pigment's minimum in kg.
+ * Remaining at or below it shows as Low Stock in Low Stock Alerts.
+ */
+export async function setMinStock(pigmentId: string, raw: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const value = String(raw ?? "").trim();
+  if (value !== "" && !/^\d+(\.\d{1,3})?$/.test(value)) {
+    return { ok: false, error: "Minimum stock must be a number in kg with up to 3 decimals." };
+  }
+  if (typeof pigmentId !== "string" || pigmentId.length > 64) return { ok: false, error: "Unknown pigment." };
+  try {
+    await prisma.pigmentStock.update({
+      where: { id: pigmentId },
+      data: { minStockKg: value === "" ? null : new Prisma.Decimal(value) },
+    });
+  } catch (err) {
+    console.error("setMinStock failed", err);
+    return { ok: false, error: "The minimum stock level could not be saved." };
+  }
+  revalidatePath("/stocks-consumption");
+  return { ok: true };
+}
+
 export type SaveStockResult =
   | { ok: true; count: number }
   | { ok: false; error: string; fieldErrors?: Record<string, string> };

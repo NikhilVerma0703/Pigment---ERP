@@ -15,6 +15,8 @@ export interface StockRow {
   productionKg: number;
   consumedKg: number;
   remainingKg: number;
+  /** Minimum Stock Level in kg, or null when not set. */
+  minStockKg: number | null;
   /** Consumed within the analytics range. */
   periodConsumedKg: number;
 }
@@ -53,10 +55,15 @@ const TOP_N = 10;
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const num = (d: { toString(): string }) => Number(d.toString());
 
-export async function getStockPageData(rangeDays: number = DEFAULT_ANALYTICS_RANGE): Promise<StockPageData> {
+/**
+ * Every pigment's stock and every pigment usage, from the saved records. The
+ * Stocks page and the Dashboard both read stock through this, so their
+ * figures always agree.
+ */
+export async function loadPigmentLedger() {
   const [stocks, formulas, records] = await Promise.all([
     prisma.pigmentStock.findMany({
-      select: { id: true, name: true, nameKey: true, color: true, entries: { select: { quantityKg: true } } },
+      select: { id: true, name: true, nameKey: true, color: true, minStockKg: true, entries: { select: { quantityKg: true } } },
       orderBy: { name: "asc" },
     }),
     prisma.formula.findMany({
@@ -111,7 +118,6 @@ export async function getStockPageData(rangeDays: number = DEFAULT_ANALYTICS_RAN
   // Only names on the stock list are pigments with stock. Formula rows also
   // include ingredients such as Resin, which are ignored unless stocked.
   const stockKeys = new Set(stocks.map((s) => s.nameKey));
-  const tracked = [...formulaUses, ...productionUses].filter((u) => stockKeys.has(u.nameKey));
   const formulaByKey = sumBy(formulaUses.filter((u) => stockKeys.has(u.nameKey)), (u) => u.nameKey, (u) => u.kg);
   const productionByKey = sumBy(productionUses.filter((u) => stockKeys.has(u.nameKey)), (u) => u.nameKey, (u) => u.kg);
 
@@ -129,9 +135,17 @@ export async function getStockPageData(rangeDays: number = DEFAULT_ANALYTICS_RAN
       productionKg,
       consumedKg,
       remainingKg: round(totalKg - consumedKg, 6),
-      periodConsumedKg: 0, // filled in below, once the range is known
+      minStockKg: s.minStockKg === null ? null : num(s.minStockKg),
+      periodConsumedKg: 0, // filled in by getStockPageData, once the range is known
     };
   });
+
+  return { stocks, records, formulaUses, productionUses, stockKeys, stockRows };
+}
+
+export async function getStockPageData(rangeDays: number = DEFAULT_ANALYTICS_RANGE): Promise<StockPageData> {
+  const { stocks, records, formulaUses, productionUses, stockKeys, stockRows } = await loadPigmentLedger();
+  const tracked = [...formulaUses, ...productionUses].filter((u) => stockKeys.has(u.nameKey));
   const nameByKey = new Map(stocks.map((s) => [s.nameKey, s.name]));
 
   const untrackedTotals = sumBy(

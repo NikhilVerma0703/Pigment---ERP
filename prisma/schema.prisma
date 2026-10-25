@@ -230,13 +230,15 @@ model ProductionMaterial {
 // ============================================================================
 
 model PigmentStock {
-  id        String   @id @default(cuid())
-  name      String
-  nameKey   String   @unique @map("name_key")
+  id         String   @id @default(cuid())
+  name       String
+  nameKey    String   @unique @map("name_key")
   /// Swatch colour for the palette, #rrggbb.
-  color     String
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  color      String
+  /// Low Stock Alerts: Remaining at or below this (kg) is "Low Stock". Null = not set.
+  minStockKg Decimal? @map("min_stock_kg") @db.Decimal(18, 3)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
 
   entries PigmentStockEntry[]
 
