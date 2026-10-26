@@ -1,10 +1,13 @@
 import "server-only";
-import type { FormulaType, MixerType, Prisma } from "@prisma/client";
+import type { FormulaType, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { round, toKg } from "@/lib/formula/calc";
 import { formulaTypeLabel } from "@/lib/formula/constants";
-import { MIXERS, mixerLabel } from "@/lib/production/constants";
-import { cycleSpans, formulaUsage, productionPigmentUsage } from "@/lib/stock/consumption";
+import { mixerLabel, mixerOrder, parseMixerFilter } from "@/lib/production/constants";
+import { cycleSpans, formulaAddition, productionPigmentUsage } from "@/lib/stock/consumption";
+
+const ENTRY_LABEL = { INITIAL: "Initial stock", ADDITION: "Stock added", ADJUSTMENT: "Stock adjusted" } as const;
+import { materialDetail } from "@/lib/production/materials";
 import type { Filters } from "@/lib/search/filters";
 import type {
   FormulaDetail,
@@ -109,6 +112,7 @@ const qtyRow = { select: { lineNo: true, name: true, unit: true, quantity: true,
 
 const productionSelect = {
   id: true,
+  createdAt: true,
   serialNo: true,
   date: true,
   batchNumber: true,
@@ -116,9 +120,11 @@ const productionSelect = {
   designName: true,
   totalCycles: true,
   mixersUsed: true,
+  roymixUsed: true,
   mixers: {
     select: {
-      mixer: true,
+      kind: true,
+      position: true,
       cycleTimeChanged: true,
       pigments: { where: { cycleChangeId: null }, orderBy: { lineNo: "asc" as const }, ...qtyRow },
       cycleChanges: {
@@ -127,14 +133,13 @@ const productionSelect = {
       },
       materials: {
         orderBy: { lineNo: "asc" as const },
-        select: { lineNo: true, name: true, unit: true, quantity: true, isStandard: true },
+        select: { lineNo: true, category: true, name: true, size: true, itemName: true, color: true, percent: true, unit: true, quantity: true, isStandard: true },
       },
     },
   },
 } satisfies Prisma.ProductionRecordSelect;
 
 type ProductionPayload = Prisma.ProductionRecordGetPayload<{ select: typeof productionSelect }>;
-const MIXER_ORDER = new Map(MIXERS.map((m, i) => [m.value, i]));
 
 function toProductionDetail(r: ProductionPayload): ProductionDetail {
   let pigmentKg = 0;
@@ -155,11 +160,12 @@ function toProductionDetail(r: ProductionPayload): ProductionDetail {
     });
 
   const mixers = [...r.mixers]
-    .sort((a, b) => (MIXER_ORDER.get(a.mixer) ?? 0) - (MIXER_ORDER.get(b.mixer) ?? 0))
+    .sort((a, b) => mixerOrder(a.kind, a.position) - mixerOrder(b.kind, b.position))
     .map((m) => {
       const { baseCycles, spans } = cycleSpans(r.totalCycles, m.cycleTimeChanged, m.cycleChanges);
       return {
-        label: mixerLabel(m.mixer),
+        label: mixerLabel(m.kind, m.position),
+        order: mixerOrder(m.kind, m.position),
         cycleTimeChanged: m.cycleTimeChanged,
         baseCycles,
         pigments: lines(m.pigments, baseCycles),
@@ -172,7 +178,19 @@ function toProductionDetail(r: ProductionPayload): ProductionDetail {
         materials: m.materials.map((x) => {
           const kg = kg6(toKg(num(x.quantity), x.unit));
           materialKg += kg;
-          return { lineNo: x.lineNo, name: x.name, unit: x.unit, quantity: num(x.quantity), kg, isStandard: x.isStandard };
+          return {
+            lineNo: x.lineNo,
+            category: x.category,
+            name: x.name,
+            size: x.size ?? "",
+            itemName: x.itemName ?? "",
+            color: x.color ?? "",
+            percent: x.percent === null ? null : num(x.percent),
+            unit: x.unit,
+            quantity: num(x.quantity),
+            kg,
+            isStandard: x.isStandard,
+          };
         }),
       };
     });
@@ -186,6 +204,7 @@ function toProductionDetail(r: ProductionPayload): ProductionDetail {
     designName: r.designName,
     totalCycles: r.totalCycles,
     mixersUsed: r.mixersUsed,
+    roymixUsed: r.roymixUsed,
     pigmentKg: kg6(pigmentKg),
     materialKg: kg6(materialKg),
     mixers,
@@ -217,14 +236,12 @@ export async function getProductionDetail(id: string): Promise<ProductionDetail 
 // ---------------------------------------------------------------------------
 
 /**
- * Every stock movement of every pigment: stock added (+), formula usage and
- * production usage (−). The running balance is computed over the pigment's
- * whole history first and the filters are applied after, so a filtered row
- * still shows the true balance at that moment.
- *
- * Formula rows count only for pigments on the stock list (a formula's other
- * ingredients, such as Resin, are not pigments). Production pigments always
- * count; one not on the stock list shows no balance.
+ * Every stock movement of every pigment: initial stock, manual additions and
+ * adjustments, formula production (+) and Daily Production consumption (−).
+ * The running balance is computed over the pigment's whole history first and
+ * the filters are applied after, so a filtered row still shows the true
+ * balance at that moment. A production pigment not on the stock list shows no
+ * balance. A formula's ingredients are not deducted (the stock rules).
  */
 export async function searchPigments(f: Filters): Promise<{ rows: PigmentTxn[]; summary: PigmentSummary[] }> {
   const [stocks, formulas, records] = await Promise.all([
@@ -233,7 +250,7 @@ export async function searchPigments(f: Filters): Promise<{ rows: PigmentTxn[]; 
         name: true,
         nameKey: true,
         color: true,
-        entries: { select: { id: true, date: true, unit: true, quantity: true, quantityKg: true, createdAt: true } },
+        entries: { select: { id: true, kind: true, note: true, date: true, unit: true, quantity: true, quantityKg: true, createdAt: true } },
       },
     }),
     prisma.formula.findMany({
@@ -241,15 +258,18 @@ export async function searchPigments(f: Filters): Promise<{ rows: PigmentTxn[]; 
         id: true,
         serialNo: true,
         name: true,
+        nameKey: true,
         date: true,
-        items: { select: { name: true, unit: true, requiredQuantity: true } },
+        createdAt: true,
+        totalQuantityRequiredKg: true,
       },
     }),
     prisma.productionRecord.findMany({ select: productionSelect }),
   ]);
 
   const stockByKey = new Map(stocks.map((s) => [s.nameKey, s]));
-  type Raw = Omit<PigmentTxn, "balanceKg" | "color"> & { key: string; order: number };
+  // `at` (when it was saved) orders transactions on the same date.
+  type Raw = Omit<PigmentTxn, "balanceKg" | "color"> & { key: string; order: number; at: string };
   const raw: Raw[] = [];
   const blank = { batchNumber: "", locNumber: "", designName: "", mixer: "", range: "", cycles: null };
 
@@ -260,10 +280,11 @@ export async function searchPigments(f: Filters): Promise<{ rows: PigmentTxn[]; 
         id: `in-${e.id}`,
         key: s.nameKey,
         order: 0,
+        at: e.createdAt.toISOString(),
         date: ymd(e.date),
         pigment: s.name,
-        kind: "in",
-        reference: "Stock added",
+        kind: e.kind === "ADJUSTMENT" ? "adjust" : "in",
+        reference: `${ENTRY_LABEL[e.kind]}${e.note ? ` — ${e.note}` : ""}`,
         quantity: num(e.quantity),
         unit: e.unit,
         inKg: num(e.quantityKg),
@@ -273,27 +294,23 @@ export async function searchPigments(f: Filters): Promise<{ rows: PigmentTxn[]; 
     }
   }
   for (const fm of formulas) {
-    const uses = formulaUsage({
-      date: ymd(fm.date),
-      items: fm.items.map((i) => ({ name: i.name, unit: i.unit, requiredQuantity: num(i.requiredQuantity) })),
-    });
-    uses.forEach((u, i) => {
-      if (!stockByKey.has(u.nameKey)) return;
-      raw.push({
-        ...blank,
-        id: `f-${fm.id}-${i}`,
-        key: u.nameKey,
-        order: 1,
-        date: u.date,
-        pigment: u.name,
-        kind: "formula",
-        reference: `Formula ${fm.name} (S.No. ${fm.serialNo})`,
-        quantity: u.quantity,
-        unit: u.unit,
-        inKg: 0,
-        outKg: u.kg,
-        ref: { type: "formula", id: fm.id },
-      });
+    const add = formulaAddition({ id: fm.id, serialNo: fm.serialNo, name: fm.name, date: ymd(fm.date), producedKg: num(fm.totalQuantityRequiredKg) });
+    if (!stockByKey.has(add.nameKey)) continue;
+    raw.push({
+      ...blank,
+      id: `f-${fm.id}`,
+      key: add.nameKey,
+      order: 1,
+      at: fm.createdAt.toISOString(),
+      date: add.date,
+      pigment: stockByKey.get(add.nameKey)!.name,
+      kind: "formula",
+      reference: `Formula ${fm.name} produced (S.No. ${fm.serialNo})`,
+      quantity: add.kg,
+      unit: "KG",
+      inKg: add.kg,
+      outKg: 0,
+      ref: { type: "formula", id: fm.id },
     });
   }
   for (const r of records) {
@@ -301,7 +318,7 @@ export async function searchPigments(f: Filters): Promise<{ rows: PigmentTxn[]; 
       date: ymd(r.date),
       totalCycles: r.totalCycles,
       mixers: r.mixers.map((m) => ({
-        mixer: mixerLabel(m.mixer),
+        mixer: mixerLabel(m.kind, m.position),
         cycleTimeChanged: m.cycleTimeChanged,
         pigments: m.pigments.map((p) => ({ name: p.name, unit: p.unit, quantity: num(p.quantity) })),
         changes: m.cycleChanges.map((c) => ({
@@ -316,6 +333,7 @@ export async function searchPigments(f: Filters): Promise<{ rows: PigmentTxn[]; 
         id: `p-${r.id}-${i}`,
         key: u.nameKey,
         order: 2,
+        at: r.createdAt.toISOString(),
         date: u.date,
         pigment: u.name,
         kind: "production",
@@ -335,10 +353,10 @@ export async function searchPigments(f: Filters): Promise<{ rows: PigmentTxn[]; 
     });
   }
 
-  // Chronological per pigment: date, then stock-in before usage, then id.
-  raw.sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order || a.id.localeCompare(b.id));
+  // Chronological per pigment: by date, then by when it was saved.
+  raw.sort((a, b) => a.date.localeCompare(b.date) || a.at.localeCompare(b.at) || a.order - b.order || a.id.localeCompare(b.id));
   const balance = new Map<string, number>();
-  const withBalance: (PigmentTxn & { key: string })[] = raw.map(({ order: _order, ...t }) => {
+  const withBalance: (PigmentTxn & { key: string })[] = raw.map(({ order: _order, at: _at, ...t }) => {
     const stock = stockByKey.get(t.key);
     let balanceKg: number | null = null;
     if (stock) {
@@ -386,16 +404,15 @@ export async function searchPigments(f: Filters): Promise<{ rows: PigmentTxn[]; 
 // Materials — consumption only
 // ---------------------------------------------------------------------------
 
-const MIXER_VALUES = MIXERS.map((m) => m.value);
-
 export async function searchMaterials(
   f: Filters,
 ): Promise<{ rows: MaterialRow[]; daily: MaterialDaily[]; totals: { material: string; kg: number }[] }> {
+  const mixerFilter = parseMixerFilter(f.mixer);
   const items = await prisma.productionMaterial.findMany({
     where: {
       ...(f.material ? { name: like(f.material) } : {}),
       mixer: {
-        ...(f.mixer && MIXER_VALUES.includes(f.mixer as MixerType) ? { mixer: f.mixer as MixerType } : {}),
+        ...(mixerFilter ? { kind: mixerFilter.kind, position: mixerFilter.position } : {}),
         record: {
           ...(f.batch ? { batchNumber: like(f.batch) } : {}),
           ...(f.loc ? { locNumber: like(f.loc) } : {}),
@@ -407,11 +424,16 @@ export async function searchMaterials(
       id: true,
       name: true,
       nameKey: true,
+      size: true,
+      itemName: true,
+      color: true,
+      percent: true,
       unit: true,
       quantity: true,
       mixer: {
         select: {
-          mixer: true,
+          kind: true,
+          position: true,
           record: { select: { id: true, serialNo: true, date: true, batchNumber: true, locNumber: true, designName: true } },
         },
       },
@@ -425,8 +447,9 @@ export async function searchMaterials(
       batchNumber: x.mixer.record.batchNumber,
       locNumber: x.mixer.record.locNumber,
       designName: x.mixer.record.designName,
-      mixer: mixerLabel(x.mixer.mixer),
+      mixer: mixerLabel(x.mixer.kind, x.mixer.position),
       material: x.name,
+      detail: materialDetail({ ...x, percent: x.percent === null ? null : num(x.percent) }),
       unit: x.unit,
       quantity: num(x.quantity),
       kg: kg6(toKg(num(x.quantity), x.unit)),

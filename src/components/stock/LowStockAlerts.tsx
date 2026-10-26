@@ -91,10 +91,6 @@ export function LowStockAlerts({ stocks }: { stocks: StockRow[] }) {
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-gray-500">
-        Out of Stock: remaining is 0 kg or less. Low Stock: remaining is at or below the Minimum Stock Level. Set a
-        minimum (in kg) for each pigment to enable its Low Stock alert; leave it empty to remove it.
-      </p>
     </div>
   );
 }

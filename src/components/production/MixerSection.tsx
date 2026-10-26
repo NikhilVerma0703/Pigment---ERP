@@ -1,10 +1,9 @@
 "use client";
 
-import { Controller, get, useFieldArray, useFormContext, useWatch } from "react-hook-form";
-import { Copy, Plus, Trash2 } from "lucide-react";
+import { get, useFieldArray, useFormContext, useWatch } from "react-hook-form";
+import { Copy } from "lucide-react";
+import { MaterialsConsumption, type MaterialSuggestions } from "@/components/production/MaterialsConsumption";
 import { emptyPigment, PigmentTable } from "@/components/production/PigmentTable";
-import { SuggestCombobox } from "@/components/ui/SuggestCombobox";
-import { UNIT_OPTIONS } from "@/lib/formula/constants";
 import { MAX_CYCLE_CHANGES } from "@/lib/production/constants";
 import type { CycleChangeInput, PigmentRowInput, ProductionInput } from "@/lib/production/schema";
 import type { Suggestion } from "@/lib/suggestions";
@@ -21,7 +20,7 @@ export function MixerSection({
   index: number;
   label: string;
   pigmentSuggestions: Suggestion[];
-  materialSuggestions: Suggestion[];
+  materialSuggestions: MaterialSuggestions;
 }) {
   return (
     <section className="card overflow-hidden">
@@ -36,7 +35,7 @@ export function MixerSection({
         </div>
         <div>
           <h3 className="mb-3 text-sm font-semibold text-gray-800">B. Materials Consumption</h3>
-          <MaterialsTable index={index} label={label} suggestions={materialSuggestions} />
+          <MaterialsConsumption index={index} label={label} suggestions={materialSuggestions} />
         </div>
       </div>
     </section>
@@ -200,111 +199,3 @@ function CycleChanges({
   );
 }
 
-/** Six standard materials (name fixed) plus any "+ Add/Others" rows. */
-function MaterialsTable({ index, label, suggestions }: { index: number; label: string; suggestions: Suggestion[] }) {
-  const {
-    control,
-    register,
-    formState: { errors },
-  } = useFormContext<ProductionInput>();
-  const base = `mixers.${index}.materials` as const;
-  const { fields, append, remove } = useFieldArray({ control, name: base });
-
-  return (
-    <div>
-      <div className="overflow-x-auto rounded-lg border border-gray-200">
-        <table className="w-full min-w-[600px] text-sm">
-          <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-600">
-            <tr>
-              <th className="w-16 px-3 py-2">S.No.</th>
-              <th className="px-3 py-2">Material</th>
-              <th className="w-32 px-3 py-2">Measurement Unit</th>
-              <th className="w-40 px-3 py-2">Quantity Used</th>
-              <th className="w-12 px-3 py-2"><span className="sr-only">Remove</span></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {fields.map((field, mi) => {
-              const rowErrors = get(errors, `${base}.${mi}`);
-              return (
-                <tr key={field.id} className="align-top">
-                  <td className="px-3 pt-4 font-medium text-gray-700">{mi + 1}</td>
-                  <td className="px-3 py-2">
-                    {field.isStandard ? (
-                      <div className="py-2 font-medium text-gray-800">{field.name}</div>
-                    ) : (
-                      <>
-                        <Controller
-                          control={control}
-                          name={`${base}.${mi}.name`}
-                          render={({ field: f }) => (
-                            <SuggestCombobox
-                              ref={f.ref}
-                              value={f.value}
-                              onChange={f.onChange}
-                              onBlur={f.onBlur}
-                              suggestions={suggestions}
-                              invalid={!!rowErrors?.name}
-                              newLabel="New material"
-                              placeholder="Other material"
-                              aria-label={`${label} material name for row ${mi + 1}`}
-                            />
-                          )}
-                        />
-                        {rowErrors?.name && <p className="field-error">{rowErrors.name.message}</p>}
-                      </>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <select
-                      className="field-input"
-                      aria-label={`${label} ${field.name || "material"} unit`}
-                      {...register(`${base}.${mi}.unit`)}
-                    >
-                      {UNIT_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      autoComplete="off"
-                      placeholder="0.000"
-                      aria-label={`${label} ${field.name || "material"} quantity`}
-                      className="field-input text-right tabular-nums"
-                      aria-invalid={!!rowErrors?.quantity || undefined}
-                      {...register(`${base}.${mi}.quantity`)}
-                    />
-                    {rowErrors?.quantity && <p className="field-error">{rowErrors.quantity.message}</p>}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    {!field.isStandard && (
-                      <button
-                        type="button"
-                        onClick={() => remove(mi)}
-                        className="rounded-md p-2 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
-                        aria-label={`${label} remove material row ${mi + 1}`}
-                        title="Remove row"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <button
-        type="button"
-        onClick={() => append({ name: "", isStandard: false, unit: "KG", quantity: "" })}
-        className="btn-secondary mt-3"
-      >
-        <Plus className="h-4 w-4" /> Add/Others
-      </button>
-    </div>
-  );
-}

@@ -5,6 +5,7 @@ import { format, parseISO } from "date-fns";
 import { FlaskConical, Loader2, X } from "lucide-react";
 import { fetchDetail, type DetailResult } from "@/app/searching/actions";
 import { formatQty } from "@/lib/formula/calc";
+import { materialDetail } from "@/lib/production/materials";
 import type { DetailRef, FormulaDetail, PigmentLine, ProductionDetail } from "@/lib/search/types";
 
 const unit = (u: string) => (u === "GM" ? "gm" : "kg");
@@ -194,6 +195,7 @@ function ProductionView({ p }: { p: ProductionDetail }) {
           ["LOC Number", p.locNumber],
           ["Production/Design Name", p.designName],
           ["Total Cycles", p.totalCycles],
+          ["Mixers Used", `${p.mixersUsed}${p.roymixUsed ? " + Roymix" : ""}`],
           ["Pigment Consumed", `${formatQty(p.pigmentKg)} kg`],
           ["Materials Consumed", `${formatQty(p.materialKg)} kg`],
         ]}
@@ -235,6 +237,7 @@ function ProductionView({ p }: { p: ProductionDetail }) {
                       <tr>
                         <th className={th}>S.No.</th>
                         <th className={th}>Material</th>
+                        <th className={th}>Size / Name / Color / %</th>
                         <th className={thR}>Quantity Used</th>
                         <th className={thR}>In kg</th>
                       </tr>
@@ -244,6 +247,7 @@ function ProductionView({ p }: { p: ProductionDetail }) {
                         <tr key={x.lineNo}>
                           <td className={td}>{x.lineNo}</td>
                           <td className={`${td} font-medium`}>{x.name}</td>
+                          <td className={`${td} text-gray-600`}>{materialDetail(x) || "—"}</td>
                           <td className={tdR}>{formatQty(x.quantity)} {unit(x.unit)}</td>
                           <td className={`${tdR} font-semibold`}>{formatQty(x.kg)} kg</td>
                         </tr>

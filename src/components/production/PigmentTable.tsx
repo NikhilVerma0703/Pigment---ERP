@@ -4,12 +4,13 @@ import { Controller, get, useFieldArray, useFormContext } from "react-hook-form"
 import { Plus, Trash2 } from "lucide-react";
 import { SuggestCombobox } from "@/components/ui/SuggestCombobox";
 import { UNIT_OPTIONS } from "@/lib/formula/constants";
-import type { PigmentRowInput, ProductionInput } from "@/lib/production/schema";
+import { emptyPigment } from "@/lib/production/defaults";
+import type { ProductionInput } from "@/lib/production/schema";
 import type { Suggestion } from "@/lib/suggestions";
 
 export type PigmentArrayName = `mixers.${number}.pigments` | `mixers.${number}.changes.${number}.pigments`;
 
-export const emptyPigment = (): PigmentRowInput => ({ name: "", unit: "KG", quantity: "" });
+export { emptyPigment };
 
 /** S.No. / Pigment-Color Used / Measurement Unit / Quantity Used, with + Add.
  *  Used for a mixer's Pigment/Color Details and for each cycle-change entry. */

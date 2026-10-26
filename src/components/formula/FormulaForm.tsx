@@ -8,6 +8,7 @@ import { format } from "date-fns";
 import { Loader2, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { saveFormula } from "@/app/formula-creation/actions";
+import { EditBanner } from "@/components/ui/EditBanner";
 import { SuggestCombobox } from "@/components/ui/SuggestCombobox";
 import { RequirementTable } from "@/components/formula/RequirementTable";
 import { calculateRequirement, type CalcItem } from "@/lib/formula/calc";
@@ -41,9 +42,13 @@ function num(v: string | undefined): number {
 export function FormulaForm({
   suggestions,
   nextSerialNo,
+  editing,
 }: {
   suggestions: Suggestion[];
   nextSerialNo: number;
+  /** A saved formula opened with Edit: the form starts with its values and
+   *  saving updates that record. */
+  editing?: { id: string; serialNo: number; name: string; values: FormulaInput };
 }) {
   const router = useRouter();
   const [saving, startSaving] = useTransition();
@@ -58,7 +63,7 @@ export function FormulaForm({
     formState: { errors },
   } = useForm<FormulaInput>({
     resolver: zodResolver(formulaInputSchema),
-    defaultValues: defaults(nextSerialNo),
+    defaultValues: editing?.values ?? defaults(nextSerialNo),
     mode: "onTouched",
   });
   const { fields, append, remove } = useFieldArray({ control, name: "items" });
@@ -74,12 +79,18 @@ export function FormulaForm({
 
   const onSubmit = (values: FormulaInput) =>
     startSaving(async () => {
-      const result = await saveFormula(values);
+      const result = await saveFormula(values, editing?.id);
       if (!result.ok) {
         for (const [field, message] of Object.entries(result.fieldErrors ?? {})) {
           setError(field as FieldPath<FormulaInput>, { type: "server", message });
         }
         toast.error(result.error);
+        return;
+      }
+      if (editing) {
+        toast.success(`Formula "${result.name}" updated (S.No. ${result.serialNo})`);
+        router.replace("/formula-creation", { scroll: false });
+        router.refresh();
         return;
       }
       toast.success(`Formula "${result.name}" saved (S.No. ${result.serialNo})`);
@@ -97,6 +108,8 @@ export function FormulaForm({
       className="space-y-6"
       noValidate
     >
+      {editing && <EditBanner label={`formula ${editing.name} (S.No. ${editing.serialNo})`} cancelHref="/formula-creation" />}
+
       {/* 1. Basic fields */}
       <section className="card p-5">
         <h2 className="mb-4 text-base font-semibold text-pacific-dark">Basic Fields</h2>
@@ -160,12 +173,7 @@ export function FormulaForm({
             </div>
 
             <div className="mt-6">
-              <div className="mb-2 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-800">Materials / Colors Used</h3>
-                <span className="text-xs text-gray-500">
-                  Pick a saved formula or material, or type a new name.
-                </span>
-              </div>
+              <h3 className="mb-2 text-sm font-semibold text-gray-800">Materials / Colors Used</h3>
               <div className="overflow-x-auto rounded-lg border border-gray-200">
                 <table className="w-full min-w-[640px] text-sm">
                   <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-600">
@@ -316,13 +324,13 @@ export function FormulaForm({
               type="button"
               className="btn-secondary"
               disabled={saving}
-              onClick={() => reset(defaults(nextSerialNo, getValues("date")))}
+              onClick={() => reset(editing ? editing.values : defaults(nextSerialNo, getValues("date")))}
             >
-              <RotateCcw className="h-4 w-4" /> Clear
+              <RotateCcw className="h-4 w-4" /> {editing ? "Discard changes" : "Clear"}
             </button>
             <button type="submit" className="btn-primary" disabled={saving}>
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {saving ? "Saving…" : "Save Formula"}
+              {saving ? "Saving…" : editing ? "Update Formula" : "Save Formula"}
             </button>
           </div>
         </>

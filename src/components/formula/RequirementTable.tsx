@@ -28,7 +28,6 @@ export function RequirementTable({
               <td className="px-4 py-3">
                 <span className="text-lg font-semibold tabular-nums text-gray-900">{formatQty(totalUsedKg)}</span>{" "}
                 <span className="text-gray-600">kg</span>
-                <p className="mt-0.5 text-xs text-gray-500">Sum of all quantities, grams converted to kg (÷ 1000).</p>
               </td>
             </tr>
             <tr>

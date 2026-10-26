@@ -1,14 +1,15 @@
 import { z } from "zod";
-import { MAX_CYCLE_CHANGES, MAX_MIXERS } from "@/lib/production/constants";
+import { MAX_CYCLE_CHANGES, MAX_REGULAR_MIXERS, MIXER_SLOTS, ROYMIX_INDEX } from "@/lib/production/constants";
+import { isPercentCategory, resinKg } from "@/lib/production/materials";
 
 // What the Daily Production form submits. Shared by the client form (React
 // Hook Form resolver) and the save action, which parses it again.
 //
-// The form always carries all three mixers so switching "Number of Mixers
-// Used" from 3 to 2 and back does not lose what was typed. The shapes below
-// therefore accept anything string-like, and the business rules run in
-// superRefine for the first `mixersUsed` mixers only; the rest are ignored
-// and never saved.
+// The form always carries every mixer slot (MAX_REGULAR_MIXERS regular ones,
+// then the Roymix slot) so changing "Number of Mixers Used" or "Roymix Used"
+// back and forth does not lose what was typed. The shapes below therefore
+// accept anything string-like, and the business rules run in superRefine for
+// the active slots only (activeMixerSlots); the rest are ignored and never saved.
 
 const QTY_RE = /^\d+(\.\d{1,3})?$/;
 const INT_RE = /^\d+$/;
@@ -25,15 +26,22 @@ const cycleChange = z.object({
   pigments: z.array(pigmentRow),
 });
 
+// One Materials Consumption entry. Which fields apply depends on the category
+// (lib/production/materials): `name` is the custom material name for OTHER,
+// `itemName` the entry's own name (Grit Name, Resin Name, …); `percent` is used
+// by Catalyst / Cobalt / Silane, whose quantity is calculated, not entered.
 const materialRow = z.object({
+  category: z.enum(["GRIT", "POWDER", "RESIN", "CATALYST", "COBALT", "SILANE", "OTHER"]),
   name: z.string(),
-  isStandard: z.boolean(),
+  size: z.string(),
+  itemName: z.string(),
+  color: z.string(),
+  percent: z.string(),
   unit: z.enum(["KG", "GM"]),
   quantity: z.string(),
 });
 
 const mixer = z.object({
-  mixer: z.enum(["MIXER_1", "MIXER_2", "ROYMIX"]),
   pigments: z.array(pigmentRow),
   cycleTimeChanged: z.enum(["NO", "YES"]),
   changeCount: z.string(),
@@ -64,14 +72,19 @@ export const productionInputSchema = z
       .trim()
       .min(1, "Number of Mixers Used is required")
       .regex(INT_RE, "Enter a whole number")
-      .refine((v) => Number(v) >= 1 && Number(v) <= MAX_MIXERS, `Enter a number from 1 to ${MAX_MIXERS}`),
-    mixers: z.array(mixer).length(3),
+      .refine((v) => Number(v) <= MAX_REGULAR_MIXERS, `Enter a number from 0 to ${MAX_REGULAR_MIXERS}`),
+    roymixUsed: z.enum(["NO", "YES"]),
+    mixers: z.array(mixer).length(MIXER_SLOTS),
   })
   .superRefine((v, ctx) => {
     const totalCycles = INT_RE.test(v.totalCycles.trim()) ? Number(v.totalCycles) : null;
-    const used = Math.min(Number(v.mixersUsed) || 0, MAX_MIXERS);
+    const slots = activeMixerSlots(v.mixersUsed, v.roymixUsed);
+    if (slots.length === 0 && INT_RE.test(v.mixersUsed.trim())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Enter at least 1 mixer, or set Roymix Used to Yes", path: ["mixersUsed"] });
+    }
 
-    v.mixers.slice(0, used).forEach((m, mi) => {
+    slots.forEach((mi) => {
+      const m = v.mixers[mi];
       const at = (...path: (string | number)[]) => ["mixers", mi, ...path];
       const issue = (message: string, ...path: (string | number)[]) =>
         ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: at(...path) });
@@ -130,13 +143,22 @@ export const productionInputSchema = z
         });
       }
 
+      const resin = resinKg(m.materials);
       m.materials.forEach((r, ri) => {
-        const name = r.name.trim();
-        const qty = r.quantity.trim();
-        if (!qty && (r.isStandard || !name)) return; // not used this time
-        if (!r.isStandard && !name) issue("Material name is required", "materials", ri, "name");
-        if (name.length > 120) issue("Name is too long", "materials", ri, "name");
-        checkQty(qty, ["materials", ri, "quantity"]);
+        if (!materialEntryUsed(r)) return; // an untouched entry is ignored
+        for (const field of ["name", "size", "itemName", "color"] as const) {
+          if (r[field].trim().length > 120) issue("Too long", "materials", ri, field);
+        }
+        if (r.category === "OTHER" && !r.name.trim()) issue("Material name is required", "materials", ri, "name");
+        if (isPercentCategory(r.category)) {
+          const p = r.percent.trim();
+          if (!p) issue("Percentage is required", "materials", ri, "percent");
+          else if (!QTY_RE.test(p)) issue("Up to 3 decimals", "materials", ri, "percent");
+          else if (Number(p) <= 0 || Number(p) > 100) issue("Between 0 and 100", "materials", ri, "percent");
+          else if (resin <= 0) issue("Enter the Resin quantity first", "materials", ri, "percent");
+        } else {
+          checkQty(r.quantity.trim(), ["materials", ri, "quantity"]);
+        }
       });
     });
   });
@@ -146,3 +168,19 @@ export type MixerInput = ProductionInput["mixers"][number];
 export type PigmentRowInput = MixerInput["pigments"][number];
 export type CycleChangeInput = MixerInput["changes"][number];
 export type MaterialRowInput = MixerInput["materials"][number];
+
+/** The form slots that are in use: Mixer 1 … Mixer N, then the Roymix slot
+ *  when Roymix Used is Yes. An invalid N counts as 0. */
+export function activeMixerSlots(mixersUsed: string, roymixUsed: string): number[] {
+  const raw = mixersUsed.trim();
+  const n = /^\d+$/.test(raw) ? Math.min(Number(raw), MAX_REGULAR_MIXERS) : 0;
+  const slots = Array.from({ length: n }, (_, i) => i);
+  if (roymixUsed === "YES") slots.push(ROYMIX_INDEX);
+  return slots;
+}
+
+/** Whether a Materials Consumption entry has anything in it. Untouched entries
+ *  (the blank row each material starts with) are neither validated nor saved. */
+export function materialEntryUsed(r: MaterialRowInput): boolean {
+  return [r.quantity, r.percent, r.size, r.itemName, r.color, r.category === "OTHER" ? r.name : ""].some((v) => v.trim() !== "");
+}

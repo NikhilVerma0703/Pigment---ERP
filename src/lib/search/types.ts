@@ -2,6 +2,7 @@
 // they cross from server to client and into the Excel export unchanged.
 
 import type { Unit } from "@/lib/formula/calc";
+import type { MaterialCategory } from "@/lib/production/materials";
 
 export interface FormulaDetail {
   id: string;
@@ -44,16 +45,31 @@ export interface ProductionDetail {
   designName: string;
   totalCycles: number;
   mixersUsed: number;
+  roymixUsed: boolean;
   pigmentKg: number;
   materialKg: number;
   mixers: {
     label: string;
+    /** Sort key: Mixer 1 … Mixer N, then the Roymix Mixer. */
+    order: number;
     cycleTimeChanged: boolean;
     /** Cycles the base pigment rows ran for. */
     baseCycles: number;
     pigments: PigmentLine[];
     changes: { seq: number; fromCycle: number; toCycle: number; pigments: PigmentLine[] }[];
-    materials: { lineNo: number; name: string; unit: Unit; quantity: number; kg: number; isStandard: boolean }[];
+    materials: {
+      lineNo: number;
+      category: MaterialCategory;
+      name: string;
+      size: string;
+      itemName: string;
+      color: string;
+      percent: number | null;
+      unit: Unit;
+      quantity: number;
+      kg: number;
+      isStandard: boolean;
+    }[];
   }[];
 }
 
@@ -64,7 +80,8 @@ export interface PigmentTxn {
   date: string;
   pigment: string;
   color: string | null;
-  kind: "in" | "formula" | "production";
+  /** in: initial stock or an addition; adjust: a correction (may be negative); formula: produced. */
+  kind: "in" | "adjust" | "formula" | "production";
   reference: string;
   batchNumber: string;
   locNumber: string;
@@ -100,6 +117,8 @@ export interface MaterialRow {
   designName: string;
   mixer: string;
   material: string;
+  /** Size · name · colour · percentage of the entry. */
+  detail: string;
   unit: Unit;
   quantity: number;
   kg: number;

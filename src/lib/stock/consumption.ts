@@ -1,11 +1,15 @@
-// Pigment/colour consumption rules. Pure: the queries feed saved records in,
-// and every figure on Stocks and Consumption comes out of here, so the stock
-// page always agrees with the records it is computed from.
+// Pigment/colour stock rules. Pure: the queries feed saved records in, and
+// every stock figure in the ERP comes out of here, so every page agrees with
+// the records it is computed from.
 //
 // Rules
 // - Everything is converted to kg (gm / 1000) and kept to 6 decimals.
-// - Formula Creation: each row's Required Quantity (the scaled amount
-//   actually made for the formula) is consumed on the formula's date.
+// - Total Stock = manual entries (initial + additions ± adjustments)
+//               + Formula Creation production.
+// - Formula Creation ADDS stock: each saved formula adds its Total Quantity
+//   Required (the quantity produced) to the stock of that formula's name.
+//   Its ingredients are NOT deducted.
+// - Daily Production CONSUMES stock (Total Consumed); Remaining = Total − Consumed.
 // - Daily Production: a pigment's "Quantity Used" is per cycle.
 //     no cycle change  → quantity × total cycles
 //     cycle changed    → each range: quantity × (To − From + 1);
@@ -22,7 +26,7 @@ export interface Usage {
   /** yyyy-mm-dd */
   date: string;
   kg: number;
-  source: "formula" | "production";
+  source: "production";
   /** The quantity and unit as recorded (per cycle for production). */
   quantity: number;
   unit: Unit;
@@ -40,11 +44,6 @@ export interface QtyRow {
   quantity: number;
 }
 
-export interface FormulaForUsage {
-  date: string;
-  items: { name: string; unit: Unit; requiredQuantity: number }[];
-}
-
 export interface ProductionForUsage {
   date: string;
   totalCycles: number;
@@ -58,19 +57,19 @@ export interface ProductionForUsage {
 
 const kg6 = (n: number) => round(n, 6);
 
-export function formulaUsage(f: FormulaForUsage): Usage[] {
-  return f.items.map((i) => ({
-    nameKey: nameKey(i.name),
-    name: i.name,
-    date: f.date,
-    kg: kg6(toKg(i.requiredQuantity, i.unit)),
-    source: "formula" as const,
-    quantity: i.requiredQuantity,
-    unit: i.unit,
-    cycles: null,
-    mixer: null,
-    range: null,
-  }));
+/** Stock added by one saved formula: its produced quantity, to its own name. */
+export interface FormulaAddition {
+  formulaId: string;
+  serialNo: number;
+  nameKey: string;
+  name: string;
+  /** yyyy-mm-dd */
+  date: string;
+  kg: number;
+}
+
+export function formulaAddition(f: { id: string; serialNo: number; name: string; date: string; producedKg: number }): FormulaAddition {
+  return { formulaId: f.id, serialNo: f.serialNo, nameKey: nameKey(f.name), name: f.name, date: f.date, kg: kg6(f.producedKg) };
 }
 
 /** How many cycles each set of pigment rows ran for: the base rows, and each

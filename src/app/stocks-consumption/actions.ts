@@ -66,11 +66,13 @@ export async function saveStock(raw: unknown): Promise<SaveStockResult> {
           where: { nameKey: key },
           update: {},
           create: { name, nameKey: key, color: defaultSwatch(name) },
-          select: { id: true },
+          select: { id: true, _count: { select: { entries: true } } },
         });
         await tx.pigmentStockEntry.create({
           data: {
             pigmentId: pigment.id,
+            // The first quantity a pigment ever gets is its initial stock.
+            kind: pigment._count.entries === 0 ? "INITIAL" : "ADDITION",
             date: today,
             unit: r.unit,
             quantity: new Prisma.Decimal(r.quantity.trim()),
@@ -86,4 +88,52 @@ export async function saveStock(raw: unknown): Promise<SaveStockResult> {
 
   revalidatePath("/stocks-consumption");
   return { ok: true, count: filled.length };
+}
+
+export type AdjustStockResult = { ok: true; newRemainingHint: string } | { ok: false; error: string };
+
+/**
+ * ADJUST STOCK — adds to or removes from one pigment's stock, with an optional
+ * note. "Add" is recorded as an ADDITION, "Remove" as a negative ADJUSTMENT.
+ * A new entry is written each time; nothing existing is overwritten, so the
+ * transaction history (and every consumption record) stays intact.
+ */
+export async function adjustStock(input: {
+  pigmentId: string;
+  direction: "add" | "remove";
+  quantity: string;
+  unit: "KG" | "GM";
+  note: string;
+}): Promise<AdjustStockResult> {
+  const qty = String(input?.quantity ?? "").trim();
+  if (!/^\d+(\.\d{1,3})?$/.test(qty) || Number(qty) <= 0) {
+    return { ok: false, error: "Enter a quantity greater than 0, with up to 3 decimals." };
+  }
+  if (input.unit !== "KG" && input.unit !== "GM") return { ok: false, error: "Select a unit." };
+  if (input.direction !== "add" && input.direction !== "remove") return { ok: false, error: "Choose Add or Remove." };
+  if (typeof input.pigmentId !== "string" || input.pigmentId.length > 64) return { ok: false, error: "Unknown pigment." };
+  const note = String(input.note ?? "").trim().slice(0, 200) || null;
+  const sign = input.direction === "remove" ? -1 : 1;
+
+  try {
+    const pigment = await prisma.pigmentStock.findUnique({ where: { id: input.pigmentId }, select: { name: true } });
+    if (!pigment) return { ok: false, error: "Unknown pigment." };
+    await prisma.pigmentStockEntry.create({
+      data: {
+        pigmentId: input.pigmentId,
+        kind: sign > 0 ? "ADDITION" : "ADJUSTMENT",
+        note,
+        date: new Date(`${format(new Date(), "yyyy-MM-dd")}T00:00:00.000Z`),
+        unit: input.unit,
+        quantity: new Prisma.Decimal(sign * Number(qty)),
+        quantityKg: new Prisma.Decimal(round(sign * toKg(Number(qty), input.unit), 6)),
+      },
+    });
+    revalidatePath("/stocks-consumption");
+    revalidatePath("/dashboard");
+    return { ok: true, newRemainingHint: `${sign > 0 ? "Added" : "Removed"} ${qty} ${input.unit === "GM" ? "gm" : "kg"} ${sign > 0 ? "to" : "from"} ${pigment.name}` };
+  } catch (err) {
+    console.error("adjustStock failed", err);
+    return { ok: false, error: "The stock could not be updated. Please try again." };
+  }
 }

@@ -53,7 +53,7 @@ export function SearchFilters({
         if (e.key === "Enter" && (e.target as HTMLElement).getAttribute("role") === "combobox") e.preventDefault();
       }}
     >
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
         {fields.map((field) =>
           field.type === "dateRange" ? (
             <div key="dates" className="sm:col-span-2">
@@ -62,7 +62,7 @@ export function SearchFilters({
                 <input
                   type="date"
                   aria-label="From date"
-                  className="field-input"
+                  className="field-input min-w-0 flex-1"
                   value={values.from ?? ""}
                   max={values.to || undefined}
                   onChange={(e) => set("from", e.target.value)}
@@ -71,7 +71,7 @@ export function SearchFilters({
                 <input
                   type="date"
                   aria-label="To date"
-                  className="field-input"
+                  className="field-input min-w-0 flex-1"
                   value={values.to ?? ""}
                   min={values.from || undefined}
                   onChange={(e) => set("to", e.target.value)}

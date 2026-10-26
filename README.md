@@ -67,19 +67,23 @@ prisma/                     schema.prisma + migrations/
   quantity, an empty "+ Add/Others" row.
 - A pigment whose name matches a saved formula is linked to it (`formula_id`).
 
-## Stocks and Consumption rules (`src/lib/stock/consumption.ts`)
+## Stocks and Consumption rules (`src/lib/stock/consumption.ts`, `loadPigmentLedger`)
 
-- Only pigments/colours on the stock list have stock. Total Stock = the sum of their "+ Add"
-  entries (stored as entered and in kg). Adding an existing name adds to its stock.
-- Consumption is computed live from the saved records, not stored, so it always matches them:
-  - Formula Creation: each row's Required Quantity, on the formula's date.
-  - Daily Production: "Quantity Used" is per cycle — quantity × total cycles; with a cycle-time
-    change, each range counts quantity × (To − From + 1), and cycles no range covers use the
-    base pigment rows.
-- Remaining = Total Stock − Consumed (can go negative: shown as "Short").
-- Materials (Grit, Powder, Resin, …) are consumption only, taken as entered (a total, not per
-  cycle), shown per production date and cumulatively.
-- Everything is converted to kg (gm ÷ 1000). Names match case-insensitively.
+- Stock is kept for pigments/colours and formulas only (materials are consumption-only).
+- Total Stock = Initial stock + Manual additions (± adjustments) + Formula production.
+  - Manual movements are `pigment_stock_entries` rows: INITIAL (a pigment's first quantity),
+    ADDITION, ADJUSTMENT (signed). The Live Stock table's Adjust writes a new row; nothing is
+    overwritten.
+  - Formula Creation adds stock: every saved formula adds its Total Quantity Required to its own
+    name's stock (a stock row is created on first save). The same formula name can be saved again
+    for each new production. Its ingredients are not deducted.
+- Total Consumed = Daily Production only (per-cycle quantity × cycles run, as before).
+- Remaining = Total Stock − Total Consumed (negative shows as Short).
+- Formula production and consumption are read from their own records, never copied into stock
+  rows, so re-reading or re-saving can never add or deduct twice.
+- Transaction history: Searching → Stock & Pigment Consumption (also the History link on each
+  Live Stock row), with the running balance after each transaction.
+- Dashboard → Pigment Details Search: current stock plus the latest formula saved under the name.
 
 ## Searching (`src/lib/search`)
 
@@ -101,8 +105,6 @@ prisma/                     schema.prisma + migrations/
 - Today (server date): records, formulas and consumption by the date entered on the record;
   "new" pigments are those first added to the stock list today, listed apart from existing
   pigments that were restocked today.
-- Recent Pigment Packing Details: latest 10 by production date then creation time; a row opens
-  the full record.
 
 ## Low Stock Alerts (`src/lib/stock/alerts.ts`)
 
@@ -120,3 +122,41 @@ prisma/                     schema.prisma + migrations/
 - Downloads: `GET /api/reports/download?type=formulas|production|stock&period=today|custom|month`
   (+ `from`/`to` or `month=yyyy-mm`). 400 with a message for invalid input, 404 when the period
   has no records. Workbooks reuse the sheet writers in `src/lib/search/export.ts`.
+
+## Materials Consumption entries (`src/lib/production/materials.ts`)
+
+- Each mixer records any number of entries per material. Grit and Powder: size (presets or
+  "+ Others"), name, colour. Resin: name. Catalyst / Cobalt / Silane: name and percentage; their
+  quantity is calculated: percent / 100 × the mixer's total resin (kg), shown in the entry's unit.
+  "+ Others" adds custom materials. Names and colours are suggested from earlier records.
+- Stored in `production_materials` (`category`, `size`, `item_name`, `color`, `percent`); `name`
+  stays the material name, so totals and reports group by it. Consumption only — no stock.
+
+## Batch Details Report (`src/lib/reports/batch.ts`)
+
+- Built from one production record: basic info; Materials Consumption (a row per material, Grit
+  and Powder a row per size, a column per mixer, total); Pigment Details (a row per mixer, the
+  original pigments, a column per cycle range when the cycle time changed).
+- Dashboard: use "Search Batch Number" (every saved record; a repeated batch number is shown with
+  its date and S.No.) or click a Batch Number in Recent Pigment Packing Details (`/dashboard?batch=<id>`).
+  Searching: a Daily Production result opens `/searching/batch/<id>` (Back to Search, Print).
+- Exports: Excel `GET /api/batch-report/<id>`; PDF generated in the browser (jsPDF).
+
+## Recent entries tables
+
+- Pigment Packing Details: "Recent Pigment Packing Details" below the form — the latest 10
+  production records (production date, then save time, newest first). A row opens the full
+  record; the Batch Number opens its Batch Details Report on the Dashboard.
+- Formula Creation: "Latest 10 Formula Entries" below the form; a row opens the full formula.
+- Both pages refresh after a successful save, so the tables update immediately.
+
+## Review, Edit and Delete (recent-entries tables)
+
+- Review: read-only overview of every saved field (the same detail view as Searching).
+- Edit: `?edit=<id>` reopens the page's form with the record's values; saving calls the same
+  save action with the id, which updates that record in place (rows/mixers are replaced) — no
+  duplicates. Stock, consumption and reports follow automatically (they are read from records).
+- Delete: asks "Do you want to permanently delete this record?". A production record is removed
+  with all its rows. A formula's references are re-pointed to the latest other formula of the same
+  name (or, if none, the ingredient becomes a plain material and production rows keep the name);
+  its stock row is removed only when nothing else uses it.

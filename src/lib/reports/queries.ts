@@ -1,7 +1,6 @@
 import "server-only";
 import { format, parseISO, startOfWeek } from "date-fns";
 import { round } from "@/lib/formula/calc";
-import { MIXERS } from "@/lib/production/constants";
 import type { Group } from "@/lib/reports/period";
 import { searchProduction } from "@/lib/search/queries";
 import type { PigmentLine, ProductionDetail } from "@/lib/search/types";
@@ -11,10 +10,10 @@ import { nameKey } from "@/lib/utils";
 // per-cycle consumption rules); here they are only grouped and summed.
 
 const kg6 = (n: number) => round(n, 6);
-const MIXER_LABELS = MIXERS.map((m) => m.label);
 
 export interface MixerStats {
   label: string;
+  order: number;
   records: number;
   cycles: number;
   changedRecords: number;
@@ -77,7 +76,7 @@ function emptyPeriod(key: string, label: string): PeriodRow & { batchSet: Set<st
     batches: 0,
     batchSet: new Set(),
     cycles: 0,
-    mixerCycles: Object.fromEntries(MIXER_LABELS.map((l) => [l, 0])),
+    mixerCycles: {},
     changedMixers: 0,
     changeEntries: 0,
     pigmentKg: 0,
@@ -107,9 +106,8 @@ export async function getProductionSummary(from: string, to: string, group: Grou
 
   const periods = new Map<string, ReturnType<typeof emptyPeriod>>();
   const totals = emptyPeriod("total", "Total");
-  const mixers = new Map<string, MixerStats>(
-    MIXER_LABELS.map((label) => [label, { label, records: 0, cycles: 0, changedRecords: 0, changeEntries: 0, pigmentKg: 0, materialKg: 0 }]),
-  );
+  // One entry per mixer that appears in the range (Mixer 1 … N, Roymix Mixer).
+  const mixers = new Map<string, MixerStats>();
   const changes: CycleChangeRow[] = [];
 
   for (const r of records) {
@@ -120,7 +118,8 @@ export async function getProductionSummary(from: string, to: string, group: Grou
     addRecord(totals, r);
 
     for (const m of r.mixers) {
-      const s = mixers.get(m.label)!;
+      const s = mixers.get(m.label) ?? { label: m.label, order: m.order, records: 0, cycles: 0, changedRecords: 0, changeEntries: 0, pigmentKg: 0, materialKg: 0 };
+      mixers.set(m.label, s);
       s.records++;
       s.cycles += r.totalCycles;
       s.pigmentKg = kg6(s.pigmentKg + lineKg(m.pigments) + m.changes.reduce((t, c) => t + lineKg(c.pigments), 0));
@@ -152,7 +151,7 @@ export async function getProductionSummary(from: string, to: string, group: Grou
   return {
     periods: [...periods.values()].sort((a, b) => b.key.localeCompare(a.key)).map(finish),
     totals: finish(totals),
-    mixers: [...mixers.values()],
+    mixers: [...mixers.values()].sort((a, b) => a.order - b.order),
     changes,
   };
 }

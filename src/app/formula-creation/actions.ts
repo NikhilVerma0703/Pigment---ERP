@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { calculateRequirement } from "@/lib/formula/calc";
 import { formulaInputSchema } from "@/lib/formula/schema";
+import { defaultSwatch } from "@/lib/stock/consumption";
 import { cleanName, nameKey } from "@/lib/utils";
 
 export type SaveFormulaResult =
@@ -21,9 +22,22 @@ export type SaveFormulaResult =
  *   1. a saved formula of that name → the row uses that formula as an
  *      ingredient (componentFormulaId);
  *   2. otherwise a material of that name, created on first use (materialId).
- * Names are matched on nameKey, so "sp yellow" finds "SP Yellow".
+ * Names are matched on nameKey, so "sp yellow" finds "SP Yellow"; when a
+ * formula name has been saved several times, the latest one is used.
+ *
+ * STOCK: the same formula name may be saved again for each new production.
+ * The formula gets a stock row (created on first save), and its Total
+ * Quantity Required counts as stock produced — read from this record by the
+ * stock ledger, so it is added exactly once. Ingredients are not deducted.
+ *
+ * EDIT: with `editId` the same record is updated in place (its rows are
+ * replaced); no new formula is created. Stock follows automatically, because
+ * it is read from the saved records.
  */
-export async function saveFormula(raw: unknown): Promise<SaveFormulaResult> {
+export async function saveFormula(raw: unknown, editId?: string): Promise<SaveFormulaResult> {
+  if (editId !== undefined && (typeof editId !== "string" || !editId || editId.length > 64)) {
+    return { ok: false, error: "Unknown formula." };
+  }
   const parsed = formulaInputSchema.safeParse(raw);
   if (!parsed.success) {
     const fieldErrors: Record<string, string> = {};
@@ -63,17 +77,22 @@ export async function saveFormula(raw: unknown): Promise<SaveFormulaResult> {
 
   try {
     const formula = await prisma.$transaction(async (tx) => {
-      const [taken, serialTaken] = await Promise.all([
-        tx.formula.findUnique({ where: { nameKey: formulaKey }, select: { id: true } }),
-        tx.formula.findUnique({ where: { serialNo }, select: { id: true } }),
-      ]);
-      if (taken) throw new FieldError("name", `A formula named "${formulaName}" already exists`);
+      const existing = editId
+        ? await tx.formula.findUnique({ where: { id: editId }, select: { nameKey: true } })
+        : null;
+      if (editId && !existing) throw new FieldError("", "This formula no longer exists.");
+
+      const serialTaken = await tx.formula.findFirst({
+        where: { serialNo, ...(editId ? { NOT: { id: editId } } : {}) },
+        select: { id: true },
+      });
       if (serialTaken) throw new FieldError("serialNo", `S.No. ${serialNo} is already used`);
 
       const keys = [...new Set(items.map((i) => i.key))];
       const components = await tx.formula.findMany({
-        where: { nameKey: { in: keys } },
+        where: { nameKey: { in: keys }, ...(editId ? { NOT: { id: editId } } : {}) },
         select: { id: true, nameKey: true },
+        orderBy: [{ date: "asc" }, { createdAt: "asc" }], // later entries win below: the latest formula
       });
       const componentByKey = new Map(components.map((c) => [c.nameKey, c.id]));
 
@@ -89,8 +108,14 @@ export async function saveFormula(raw: unknown): Promise<SaveFormulaResult> {
         materialByKey.set(item.key, material.id);
       }
 
-      return tx.formula.create({
-        data: {
+      // The formula's stock row (its production is added to it).
+      await tx.pigmentStock.upsert({
+        where: { nameKey: formulaKey },
+        update: {},
+        create: { name: formulaName, nameKey: formulaKey, color: defaultSwatch(formulaName) },
+      });
+
+      const data = {
           date: new Date(`${input.date}T00:00:00.000Z`),
           serialNo,
           formulaType: input.formulaType,
@@ -112,17 +137,23 @@ export async function saveFormula(raw: unknown): Promise<SaveFormulaResult> {
               materialId: componentByKey.has(item.key) ? null : materialByKey.get(item.key) ?? null,
             })),
           },
-        },
-        select: { id: true, name: true, serialNo: true },
-      });
+      };
+      const select = { id: true, name: true, serialNo: true } as const;
+
+      if (!editId) return tx.formula.create({ data, select });
+      await tx.formulaItem.deleteMany({ where: { formulaId: editId } });
+      const updated = await tx.formula.update({ where: { id: editId }, data, select });
+      if (existing && existing.nameKey !== formulaKey) await removeUnusedStockRow(tx, existing.nameKey);
+      return updated;
     });
 
     revalidatePath("/formula-creation");
     revalidatePath("/stocks-consumption");
+    revalidatePath("/dashboard");
     return { ok: true, ...formula };
   } catch (err) {
     if (err instanceof FieldError) {
-      return { ok: false, error: err.message, fieldErrors: { [err.field]: err.message } };
+      return { ok: false, error: err.message, fieldErrors: err.field ? { [err.field]: err.message } : undefined };
     }
     // Two saves racing past the checks above meet the unique indexes instead.
     if (
@@ -134,10 +165,6 @@ export async function saveFormula(raw: unknown): Promise<SaveFormulaResult> {
       if (target.includes("serial")) {
         return { ok: false, error: `S.No. ${serialNo} is already used`, fieldErrors: { serialNo: `S.No. ${serialNo} is already used` } };
       }
-      if (target.includes("name")) {
-        const message = `A formula named "${formulaName}" already exists`;
-        return { ok: false, error: message, fieldErrors: { name: message } };
-      }
     }
     console.error("saveFormula failed", err);
     return { ok: false, error: "The formula could not be saved. Please try again." };
@@ -148,4 +175,63 @@ class FieldError extends Error {
   constructor(readonly field: string, message: string) {
     super(message);
   }
+}
+
+type Tx = Prisma.TransactionClient;
+
+/** Drops a formula's stock row once nothing gives it meaning: no formula of
+ *  that name remains, it has no manual entries, no Daily Production used it
+ *  and no minimum is set. Otherwise it stays (its history still counts). */
+async function removeUnusedStockRow(tx: Tx, key: string) {
+  const [formulas, row, used] = await Promise.all([
+    tx.formula.count({ where: { nameKey: key } }),
+    tx.pigmentStock.findUnique({ where: { nameKey: key }, select: { id: true, minStockKg: true, _count: { select: { entries: true } } } }),
+    tx.productionPigment.count({ where: { nameKey: key } }),
+  ]);
+  if (row && formulas === 0 && used === 0 && row._count.entries === 0 && row.minStockKg === null) {
+    await tx.pigmentStock.delete({ where: { id: row.id } });
+  }
+}
+
+/**
+ * DELETE FORMULA — removes the formula and its rows. Records that point at it
+ * are re-pointed rather than broken: another formula using it as an
+ * ingredient, and Daily Production rows that used it, move to the latest
+ * other formula of the same name; if there is none, the ingredient becomes a
+ * plain material and the production row keeps its name. Its stock addition
+ * disappears with it (stock is read from the records).
+ */
+export async function deleteFormula(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (typeof id !== "string" || !id || id.length > 64) return { ok: false, error: "Unknown formula." };
+  try {
+    await prisma.$transaction(async (tx) => {
+      const formula = await tx.formula.findUnique({ where: { id }, select: { name: true, nameKey: true } });
+      if (!formula) throw new FieldError("", "This formula no longer exists.");
+      const replacement = await tx.formula.findFirst({
+        where: { nameKey: formula.nameKey, NOT: { id } },
+        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+        select: { id: true },
+      });
+      if (replacement) {
+        await tx.formulaItem.updateMany({ where: { componentFormulaId: id }, data: { componentFormulaId: replacement.id } });
+      } else if (await tx.formulaItem.count({ where: { componentFormulaId: id } })) {
+        const material = await tx.material.upsert({
+          where: { nameKey: formula.nameKey },
+          update: {},
+          create: { name: formula.name, nameKey: formula.nameKey },
+          select: { id: true },
+        });
+        await tx.formulaItem.updateMany({ where: { componentFormulaId: id }, data: { componentFormulaId: null, materialId: material.id } });
+      }
+      await tx.productionPigment.updateMany({ where: { formulaId: id }, data: { formulaId: replacement?.id ?? null } });
+      await tx.formula.delete({ where: { id } });
+      await removeUnusedStockRow(tx, formula.nameKey);
+    });
+  } catch (err) {
+    if (err instanceof FieldError) return { ok: false, error: err.message };
+    console.error("deleteFormula failed", err);
+    return { ok: false, error: "The formula could not be deleted. Please try again." };
+  }
+  for (const path of ["/formula-creation", "/stocks-consumption", "/dashboard", "/searching", "/reports"]) revalidatePath(path);
+  return { ok: true };
 }

@@ -11,17 +11,6 @@ export interface NamedKg {
   kg: number;
 }
 
-export interface RecentProduction {
-  id: string;
-  date: string;
-  serialNo: number;
-  batchNumber: string;
-  locNumber: string;
-  designName: string;
-  totalCycles: number;
-  mixersUsed: number;
-}
-
 export interface DashboardData {
   today: string;
   overall: {
@@ -42,7 +31,28 @@ export interface DashboardData {
     materialKg: number;
     materials: NamedKg[];
   };
-  recent: RecentProduction[];
+  /** Every pigment/colour and formula on the stock list, A–Z. */
+  pigmentNames: string[];
+  /** Every saved production record, newest first, for Search Batch Number. */
+  batchOptions: { id: string; label: string }[];
+  /** Pigment Details Search: the selected pigment, when one is chosen. */
+  pigmentDetail: PigmentDetail | null;
+}
+
+export interface PigmentDetail {
+  name: string;
+  /** Null when the name is not on the stock list. */
+  stock: { totalKg: number; consumedKg: number; remainingKg: number; formulaKg: number } | null;
+  /** The latest saved formula of this name, or null if it was never created as a formula. */
+  formula: {
+    id: string;
+    serialNo: number;
+    date: string;
+    producedKg: number;
+    /** How many times a formula of this name has been saved. */
+    timesCreated: number;
+    items: { lineNo: number; name: string; unit: "KG" | "GM"; quantity: number }[];
+  } | null;
 }
 
 const kg6 = (n: number) => round(n, 6);
@@ -57,12 +67,12 @@ const num = (d: { toString(): string }) => Number(d.toString());
  * those first put on the stock list today; pigments already on the list that
  * got more stock today are listed separately.
  */
-export async function getDashboardData(): Promise<DashboardData> {
+export async function getDashboardData(pigment?: string): Promise<DashboardData> {
   const now = new Date();
   const today = format(now, "yyyy-MM-dd");
   const todayDate = new Date(`${today}T00:00:00.000Z`);
 
-  const [ledger, formulasAll, formulasToday, productionToday, newStocks, entriesToday, recent] = await Promise.all([
+  const [ledger, formulasAll, formulasToday, productionToday, newStocks, entriesToday, batches] = await Promise.all([
     loadPigmentLedger(),
     prisma.formula.count(),
     prisma.formula.count({ where: { date: todayDate } }),
@@ -74,17 +84,12 @@ export async function getDashboardData(): Promise<DashboardData> {
     }),
     prisma.productionRecord.findMany({
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-      take: 10,
-      select: { id: true, date: true, serialNo: true, batchNumber: true, locNumber: true, designName: true, totalCycles: true, mixersUsed: true },
+      select: { id: true, batchNumber: true, date: true, serialNo: true },
     }),
   ]);
 
-  // Today's pigment consumption: production pigments always count; formula
-  // rows count only for pigments on the stock list (the Stocks page's rule).
-  const usesToday = [
-    ...ledger.productionUses,
-    ...ledger.formulaUses.filter((u) => ledger.stockKeys.has(u.nameKey)),
-  ].filter((u) => u.date === today);
+  // Today's pigment consumption: Daily Production only (formulas add stock).
+  const usesToday = ledger.productionUses.filter((u) => u.date === today);
   const pigmentNames = new Map(usesToday.map((u) => [u.nameKey, u.name]));
   for (const s of ledger.stocks) if (pigmentNames.has(s.nameKey)) pigmentNames.set(s.nameKey, s.name);
   const pigments = [...sumBy(usesToday, (u) => u.nameKey, (u) => u.kg)]
@@ -123,6 +128,72 @@ export async function getDashboardData(): Promise<DashboardData> {
       materialKg: kg6(materials.reduce((s, m) => s + m.kg, 0)),
       materials,
     },
-    recent: recent.map((r) => ({ ...r, date: r.date.toISOString().slice(0, 10) })),
+    batchOptions: batchOptions(batches),
+    pigmentNames: ledger.stocks.map((s) => s.name).sort((a, b) => a.localeCompare(b)),
+    pigmentDetail: pigment ? await getPigmentDetail(pigment, ledger.stockRows, ledger.stocks) : null,
   };
+}
+
+/**
+ * Pigment Details Search: the pigment's current stock (from the same ledger as
+ * everywhere else) and the ingredients of the LATEST formula saved under its
+ * name — even when that formula has been created several times.
+ */
+async function getPigmentDetail(
+  pigment: string,
+  stockRows: { name: string; totalKg: number; consumedKg: number; remainingKg: number; formulaKg: number }[],
+  stocks: { nameKey: string }[],
+): Promise<PigmentDetail | null> {
+  const key = nameKey(pigment);
+  if (!key) return null;
+  const i = stocks.findIndex((s) => s.nameKey === key);
+  const row = i === -1 ? null : stockRows[i];
+
+  const [latest, timesCreated] = await Promise.all([
+    prisma.formula.findFirst({
+      where: { nameKey: key },
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      select: {
+        id: true,
+        serialNo: true,
+        name: true,
+        date: true,
+        totalQuantityRequiredKg: true,
+        items: { orderBy: { lineNo: "asc" }, select: { lineNo: true, name: true, unit: true, quantity: true } },
+      },
+    }),
+    prisma.formula.count({ where: { nameKey: key } }),
+  ]);
+  if (!row && !latest) return null;
+
+  return {
+    name: row?.name ?? latest?.name ?? pigment,
+    stock: row
+      ? { totalKg: row.totalKg, consumedKg: row.consumedKg, remainingKg: row.remainingKg, formulaKg: row.formulaKg }
+      : null,
+    formula: latest
+      ? {
+          id: latest.id,
+          serialNo: latest.serialNo,
+          date: latest.date.toISOString().slice(0, 10),
+          producedKg: num(latest.totalQuantityRequiredKg),
+          timesCreated,
+          items: latest.items.map((it) => ({ lineNo: it.lineNo, name: it.name, unit: it.unit, quantity: num(it.quantity) })),
+        }
+      : null,
+  };
+}
+
+/** One option per record. A batch number saved more than once is told apart
+ *  by its date and S.No., so every option opens exactly one record. */
+function batchOptions(rows: { id: string; batchNumber: string; date: Date; serialNo: number }[]): { id: string; label: string }[] {
+  const counts = new Map<string, number>();
+  for (const r of rows) counts.set(nameKey(r.batchNumber), (counts.get(nameKey(r.batchNumber)) ?? 0) + 1);
+  return rows.map((r) => ({
+    id: r.id,
+    label:
+      (counts.get(nameKey(r.batchNumber)) ?? 0) > 1
+        ? `${r.batchNumber} (${format(r.date, "dd MMM yyyy")}, S.No. ${r.serialNo})`
+        : r.batchNumber,
+  }));
 }

@@ -42,10 +42,6 @@ export function MaterialsConsumption({ data }: { data: StockPageData["materials"
           </tbody>
         </table>
       </div>
-      <p className="mt-2 text-xs text-gray-500">
-        Quantities in kg (grams converted). Day columns show the {data.dates.length} most recent production dates; Total
-        Consumed is all records.
-      </p>
     </>
   );
 }

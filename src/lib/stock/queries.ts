@@ -2,7 +2,7 @@ import "server-only";
 import { addDays, format } from "date-fns";
 import { prisma } from "@/lib/prisma";
 import { round } from "@/lib/formula/calc";
-import { formulaUsage, productionPigmentUsage, sumBy, type Usage } from "@/lib/stock/consumption";
+import { formulaAddition, productionPigmentUsage, sumBy, type FormulaAddition, type Usage } from "@/lib/stock/consumption";
 import { DEFAULT_ANALYTICS_RANGE } from "@/lib/stock/constants";
 import type { Suggestion } from "@/lib/suggestions";
 
@@ -10,9 +10,15 @@ export interface StockRow {
   id: string;
   name: string;
   color: string;
-  totalKg: number;
+  /** First manual stock entered. */
+  initialKg: number;
+  /** Later manual additions and adjustments (adjustments may be negative). */
+  manualKg: number;
+  /** Added by Formula Creation (the formula's produced quantity). */
   formulaKg: number;
-  productionKg: number;
+  /** initial + manual + formula. */
+  totalKg: number;
+  /** Used in Daily Production. */
   consumedKg: number;
   remainingKg: number;
   /** Minimum Stock Level in kg, or null when not set. */
@@ -56,18 +62,26 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const num = (d: { toString(): string }) => Number(d.toString());
 
 /**
- * Every pigment's stock and every pigment usage, from the saved records. The
- * Stocks page and the Dashboard both read stock through this, so their
- * figures always agree.
+ * Every pigment's stock, from the saved records: manual entries, formula
+ * production (additions) and Daily Production (consumption). The Stocks page,
+ * the Dashboard and Searching all read stock through this, so their figures
+ * always agree.
  */
 export async function loadPigmentLedger() {
   const [stocks, formulas, records] = await Promise.all([
     prisma.pigmentStock.findMany({
-      select: { id: true, name: true, nameKey: true, color: true, minStockKg: true, entries: { select: { quantityKg: true } } },
+      select: {
+        id: true,
+        name: true,
+        nameKey: true,
+        color: true,
+        minStockKg: true,
+        entries: { select: { kind: true, quantityKg: true } },
+      },
       orderBy: { name: "asc" },
     }),
     prisma.formula.findMany({
-      select: { date: true, items: { select: { name: true, unit: true, requiredQuantity: true } } },
+      select: { id: true, serialNo: true, name: true, date: true, totalQuantityRequiredKg: true },
     }),
     prisma.productionRecord.findMany({
       select: {
@@ -92,12 +106,9 @@ export async function loadPigmentLedger() {
     }),
   ]);
 
-  // ---- Pigment usage from both sources -----------------------------------
-  const formulaUses: Usage[] = formulas.flatMap((f) =>
-    formulaUsage({
-      date: ymd(f.date),
-      items: f.items.map((i) => ({ name: i.name, unit: i.unit, requiredQuantity: num(i.requiredQuantity) })),
-    }),
+  // ---- Additions (formula production) and consumption (Daily Production) ---
+  const formulaAdds: FormulaAddition[] = formulas.map((f) =>
+    formulaAddition({ id: f.id, serialNo: f.serialNo, name: f.name, date: ymd(f.date), producedKg: num(f.totalQuantityRequiredKg) }),
   );
   const productionUses: Usage[] = records.flatMap((r) =>
     productionPigmentUsage({
@@ -115,24 +126,25 @@ export async function loadPigmentLedger() {
     }),
   );
 
-  // Only names on the stock list are pigments with stock. Formula rows also
-  // include ingredients such as Resin, which are ignored unless stocked.
   const stockKeys = new Set(stocks.map((s) => s.nameKey));
-  const formulaByKey = sumBy(formulaUses.filter((u) => stockKeys.has(u.nameKey)), (u) => u.nameKey, (u) => u.kg);
+  const formulaByKey = sumBy(formulaAdds, (a) => a.nameKey, (a) => a.kg);
   const productionByKey = sumBy(productionUses.filter((u) => stockKeys.has(u.nameKey)), (u) => u.nameKey, (u) => u.kg);
 
   const stockRows: StockRow[] = stocks.map((s) => {
-    const totalKg = round(s.entries.reduce((sum, e) => sum + num(e.quantityKg), 0), 6);
+    const entryKg = (kinds: string[]) => s.entries.filter((e) => kinds.includes(e.kind)).reduce((sum, e) => sum + num(e.quantityKg), 0);
+    const initialKg = round(entryKg(["INITIAL"]), 6);
+    const manualKg = round(entryKg(["ADDITION", "ADJUSTMENT"]), 6);
     const formulaKg = formulaByKey.get(s.nameKey) ?? 0;
-    const productionKg = productionByKey.get(s.nameKey) ?? 0;
-    const consumedKg = round(formulaKg + productionKg, 6);
+    const totalKg = round(initialKg + manualKg + formulaKg, 6);
+    const consumedKg = productionByKey.get(s.nameKey) ?? 0;
     return {
       id: s.id,
       name: s.name,
       color: s.color,
-      totalKg,
+      initialKg,
+      manualKg,
       formulaKg,
-      productionKg,
+      totalKg,
       consumedKg,
       remainingKg: round(totalKg - consumedKg, 6),
       minStockKg: s.minStockKg === null ? null : num(s.minStockKg),
@@ -140,12 +152,13 @@ export async function loadPigmentLedger() {
     };
   });
 
-  return { stocks, records, formulaUses, productionUses, stockKeys, stockRows };
+  return { stocks, records, formulaAdds, productionUses, stockKeys, stockRows };
 }
 
 export async function getStockPageData(rangeDays: number = DEFAULT_ANALYTICS_RANGE): Promise<StockPageData> {
-  const { stocks, records, formulaUses, productionUses, stockKeys, stockRows } = await loadPigmentLedger();
-  const tracked = [...formulaUses, ...productionUses].filter((u) => stockKeys.has(u.nameKey));
+  const { stocks, records, productionUses, stockKeys, stockRows } = await loadPigmentLedger();
+  // Consumption is Daily Production only.
+  const tracked = productionUses.filter((u) => stockKeys.has(u.nameKey));
   const nameByKey = new Map(stocks.map((s) => [s.nameKey, s.name]));
 
   const untrackedTotals = sumBy(
@@ -205,7 +218,7 @@ export async function getStockPageData(rangeDays: number = DEFAULT_ANALYTICS_RAN
     }));
 
   // ---- Suggestions for the stock name field ------------------------------
-  const formulaNames = await prisma.formula.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } });
+  const formulaNames = await prisma.formula.findMany({ select: { id: true, name: true }, distinct: ["nameKey"], orderBy: [{ nameKey: "asc" }, { createdAt: "desc" }] });
   const seen = new Set<string>();
   const pigmentSuggestions: Suggestion[] = [];
   for (const f of formulaNames) {

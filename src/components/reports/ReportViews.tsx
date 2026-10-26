@@ -3,11 +3,10 @@
 import { useCallback, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { format, parseISO } from "date-fns";
-import { CalendarRange, Info, Loader2 } from "lucide-react";
+import { CalendarRange, Loader2 } from "lucide-react";
 import { DataTable, type Column } from "@/components/search/DataTable";
 import { RecordDetailModal } from "@/components/search/RecordDetail";
 import { formatQty } from "@/lib/formula/calc";
-import { MIXERS } from "@/lib/production/constants";
 import { GROUPS, type Group, type ReportTab } from "@/lib/reports/period";
 import type { ConsumptionReport, ConsumptionRow, CycleChangeRow, PeriodRow, ProductionSummary } from "@/lib/reports/queries";
 import type { DetailRef } from "@/lib/search/types";
@@ -15,7 +14,6 @@ import type { DetailRef } from "@/lib/search/types";
 const kg = (v: number) => `${formatQty(v)} kg`;
 const day = (d: string) => format(parseISO(d), "dd MMM yyyy");
 const th = "whitespace-nowrap px-3 py-2 text-xs font-semibold uppercase tracking-wide text-gray-600";
-const MIXER_LABELS = MIXERS.map((m) => m.label);
 
 function useDetail() {
   const [target, setTarget] = useState<DetailRef | null>(null);
@@ -86,6 +84,8 @@ function Empty({ text }: { text: string }) {
 export function ProductionSummaryView({ summary, rangeLabel }: { summary: ProductionSummary; rangeLabel: string }) {
   const { open, modal } = useDetail();
   const { periods, totals, mixers, changes } = summary;
+  // A cycles column for each mixer used in the range.
+  const mixerLabels = mixers.map((m) => m.label);
 
   if (totals.records === 0) return <Empty text={`No Daily Production records in ${rangeLabel}.`} />;
 
@@ -96,7 +96,7 @@ export function ProductionSummaryView({ summary, rangeLabel }: { summary: Produc
         <td className={cls}>{p.records}</td>
         <td className={cls}>{p.batches}</td>
         <td className={cls}>{p.cycles}</td>
-        {MIXER_LABELS.map((l) => (
+        {mixerLabels.map((l) => (
           <td key={l} className={cls}>{p.mixerCycles[l] || "—"}</td>
         ))}
         <td className={cls}>{p.changeEntries ? `${p.changeEntries} (${p.changedMixers} mixer${p.changedMixers === 1 ? "" : "s"})` : "—"}</td>
@@ -137,7 +137,7 @@ export function ProductionSummaryView({ summary, rangeLabel }: { summary: Produc
                 <th className={`${th} text-right`}>Records</th>
                 <th className={`${th} text-right`}>Batches</th>
                 <th className={`${th} text-right`}>Total Cycles</th>
-                {MIXER_LABELS.map((l) => (
+                {mixerLabels.map((l) => (
                   <th key={l} className={`${th} text-right`}>{l} Cycles</th>
                 ))}
                 <th className={`${th} text-right`}>Cycle Changes</th>
@@ -161,9 +161,6 @@ export function ProductionSummaryView({ summary, rangeLabel }: { summary: Produc
             </tfoot>
           </table>
         </div>
-        <p className="mt-2 text-xs text-gray-500">
-          Batches counts distinct batch numbers. A mixer&apos;s cycles are the record&apos;s total cycles for every mixer it used.
-        </p>
       </section>
 
       <section className="card p-5">
@@ -204,7 +201,6 @@ export function ProductionSummaryView({ summary, rangeLabel }: { summary: Produc
           rows={changes}
           columns={changeColumns}
           onRowClick={(c) => open({ type: "production", id: c.recordId })}
-          caption="Every cycle range entered in this period. Click a row to open the production record."
           emptyText="No cycle-time changes in this period."
         />
       </section>
@@ -215,7 +211,7 @@ export function ProductionSummaryView({ summary, rangeLabel }: { summary: Produc
 
 // ---- 2. Consumption & cost -----------------------------------------------------
 
-function TotalsTable({ title, rows, unitNote }: { title: string; rows: { name: string; kg: number; records: number }[]; unitNote: string }) {
+function TotalsTable({ title, rows }: { title: string; rows: { name: string; kg: number; records: number }[] }) {
   return (
     <section className="card p-5">
       <h3 className="mb-3 text-sm font-semibold text-gray-800">{title}</h3>
@@ -247,7 +243,6 @@ function TotalsTable({ title, rows, unitNote }: { title: string; rows: { name: s
           </table>
         </div>
       )}
-      <p className="mt-2 text-xs text-gray-500">{unitNote}</p>
     </section>
   );
 }
@@ -279,27 +274,18 @@ export function ConsumptionView({ report, rangeLabel }: { report: ConsumptionRep
         <Stat label="Total Cost" value={<span className="text-gray-400">—</span>} />
       </div>
 
-      <div className="flex items-start gap-3 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3 text-sm text-brand-900">
-        <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-        <p>
-          <span className="font-semibold">Cost reporting is not active yet.</span> Rate and Cost columns stay empty until
-          material and pigment rates are added; consumption figures are complete.
-        </p>
-      </div>
-
       <section className="card p-5">
         <h3 className="mb-3 text-sm font-semibold text-gray-800">Production-wise Consumption</h3>
         <DataTable
           rows={report.rows}
           columns={columns}
           onRowClick={(r) => open({ type: "production", id: r.id })}
-          caption="Pigments use quantity per cycle × cycles run. Click a row to open the production record."
         />
       </section>
 
-      <div className="grid gap-6 xl:grid-cols-2">
-        <TotalsTable title="Pigment/Color Consumption Summary" rows={report.pigmentTotals} unitNote="From Daily Production, in kg." />
-        <TotalsTable title="Materials Consumption Summary" rows={report.materialTotals} unitNote="Consumption only, in kg." />
+      <div className="grid gap-6 xl:grid-cols-2 [&>*]:min-w-0">
+        <TotalsTable title="Pigment/Color Consumption Summary" rows={report.pigmentTotals} />
+        <TotalsTable title="Materials Consumption Summary" rows={report.materialTotals} />
       </div>
       {modal}
     </div>

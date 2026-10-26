@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useRouter } from "next/navigation";
 import { format, parseISO } from "date-fns";
 import { DataTable, type Column } from "@/components/search/DataTable";
 import { RecordDetailModal } from "@/components/search/RecordDetail";
@@ -11,7 +12,6 @@ import { cn } from "@/lib/utils";
 const day = (d: string) => format(parseISO(d), "dd MMM yyyy");
 const kg = (v: number) => `${formatQty(v)} kg`;
 const unit = (u: string) => (u === "GM" ? "gm" : "kg");
-const HINT = "Click a row to open the complete record.";
 
 function useDetail() {
   const [target, setTarget] = useState<DetailRef | null>(null);
@@ -50,7 +50,7 @@ export function FormulaResults({ rows }: { rows: FormulaResultRow[] }) {
   ];
   return (
     <>
-      <DataTable rows={rows} columns={columns} onRowClick={(r) => open({ type: "formula", id: r.id })} caption={HINT} emptyText="No formulas match these filters." />
+      <DataTable rows={rows} columns={columns} onRowClick={(r) => open({ type: "formula", id: r.id })} emptyText="No formulas match these filters." />
       {modal}
     </>
   );
@@ -73,7 +73,10 @@ export interface ProductionResultRow {
 }
 
 export function ProductionResults({ rows }: { rows: ProductionResultRow[] }) {
-  const { open, modal } = useDetail();
+  const router = useRouter();
+  // A result opens its Batch Details Report page; "Back to Search" returns to this search.
+  const openReport = (id: string) =>
+    router.push(`/searching/batch/${id}?back=${encodeURIComponent(window.location.search.slice(1))}`);
   const columns: Column<ProductionResultRow>[] = [
     { key: "serialNo", header: "S.No.", render: (r) => r.serialNo, sort: (r) => r.serialNo },
     { key: "date", header: "Date", render: (r) => day(r.date), sort: (r) => r.date, className: "whitespace-nowrap" },
@@ -88,8 +91,12 @@ export function ProductionResults({ rows }: { rows: ProductionResultRow[] }) {
   ];
   return (
     <>
-      <DataTable rows={rows} columns={columns} onRowClick={(r) => open({ type: "production", id: r.id })} caption={HINT} emptyText="No production records match these filters." />
-      {modal}
+      <DataTable
+        rows={rows}
+        columns={columns}
+        onRowClick={(r) => openReport(r.id)}
+        emptyText="No production records match these filters."
+      />
     </>
   );
 }
@@ -97,9 +104,10 @@ export function ProductionResults({ rows }: { rows: ProductionResultRow[] }) {
 // ---- 3. Stock & pigment consumption -----------------------------------------
 
 const KIND = {
-  in: { label: "Stock added", cls: "bg-emerald-50 text-emerald-700" },
-  formula: { label: "Formula", cls: "bg-brand-100 text-brand-700" },
-  production: { label: "Production", cls: "bg-amber-50 text-amber-700" },
+  in: { label: "Stock in", cls: "bg-emerald-50 text-emerald-700" },
+  adjust: { label: "Adjustment", cls: "bg-violet-50 text-violet-700" },
+  formula: { label: "Formula produced", cls: "bg-brand-100 text-brand-700" },
+  production: { label: "Consumed", cls: "bg-amber-50 text-amber-700" },
 } as const;
 
 export function PigmentResults({ rows, summary }: { rows: PigmentTxn[]; summary: PigmentSummary[] }) {
@@ -135,7 +143,8 @@ export function PigmentResults({ rows, summary }: { rows: PigmentTxn[]; summary:
         t.kind === "production" ? `${formatQty(t.quantity)} ${unit(t.unit)} × ${t.cycles}` : `${formatQty(t.quantity)} ${unit(t.unit)}`,
       className: "whitespace-nowrap",
     },
-    { key: "in", header: "In (kg)", align: "right", render: (t) => (t.inKg ? <span className="text-emerald-700">+{formatQty(t.inKg)}</span> : "—"), sort: (t) => t.inKg },
+    { key: "in", header: "Stock In / Adj. (kg)", align: "right", render: (t) =>
+        t.inKg > 0 ? <span className="text-emerald-700">+{formatQty(t.inKg)}</span> : t.inKg < 0 ? <span className="text-red-600">−{formatQty(-t.inKg)}</span> : "—", sort: (t) => t.inKg },
     { key: "out", header: "Consumed (kg)", align: "right", render: (t) => (t.outKg ? <span className="text-red-600">−{formatQty(t.outKg)}</span> : "—"), sort: (t) => t.outKg },
     {
       key: "balance",
@@ -176,7 +185,6 @@ export function PigmentResults({ rows, summary }: { rows: PigmentTxn[]; summary:
         rows={rows}
         columns={columns}
         onRowClick={(t) => t.ref && open(t.ref)}
-        caption="Transaction-wise history, newest first. Balance is the stock left after each transaction. Click a consumption row to open its record."
         emptyText="No stock or consumption transactions match these filters."
       />
       {modal}
@@ -203,6 +211,7 @@ export function MaterialResults({
     { key: "design", header: "Design", render: (r) => r.designName, sort: (r) => r.designName.toLowerCase() },
     { key: "mixer", header: "Mixer", render: (r) => r.mixer, sort: (r) => r.mixer, className: "whitespace-nowrap" },
     { key: "material", header: "Material", render: (r) => <span className="font-semibold text-gray-900">{r.material}</span>, sort: (r) => r.material.toLowerCase() },
+    { key: "detail", header: "Size / Name / Color", render: (r) => <span className="text-gray-600">{r.detail || "—"}</span>, sort: (r) => r.detail },
     { key: "qty", header: "Quantity Used", align: "right", render: (r) => `${formatQty(r.quantity)} ${unit(r.unit)}` },
     { key: "kg", header: "In kg", align: "right", render: (r) => kg(r.kg), sort: (r) => r.kg },
   ];
@@ -226,12 +235,12 @@ export function MaterialResults({
       )}
       <div>
         <h3 className="mb-2 text-sm font-semibold text-gray-800">Consumption per Production Record</h3>
-        <DataTable rows={rows} columns={columns} onRowClick={(r) => open({ type: "production", id: r.recordId })} caption={HINT} emptyText="No material consumption matches these filters." />
+        <DataTable rows={rows} columns={columns} onRowClick={(r) => open({ type: "production", id: r.recordId })} emptyText="No material consumption matches these filters." />
       </div>
       {daily.length > 0 && (
         <div>
           <h3 className="mb-2 text-sm font-semibold text-gray-800">Daily and Cumulative Totals</h3>
-          <DataTable rows={dailyRows} columns={dailyColumns} caption="Cumulative = running total per material up to that day, within these results." />
+          <DataTable rows={dailyRows} columns={dailyColumns} />
         </div>
       )}
       {modal}

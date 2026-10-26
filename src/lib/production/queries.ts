@@ -10,6 +10,10 @@ export interface ProductionSuggestions {
   pigments: Suggestion[];
   /** Names entered under "+ Add/Others" on earlier records. */
   otherMaterials: Suggestion[];
+  /** Earlier entry names per material (Grit Name, Resin Name, …). */
+  materialNames: Record<string, Suggestion[]>;
+  /** Earlier Grit / Powder colours. */
+  materialColors: Suggestion[];
 }
 
 async function distinct(column: "batchNumber" | "locNumber" | "designName"): Promise<string[]> {
@@ -29,11 +33,11 @@ function uniqueByKey(rows: { name: string; nameKey: string }[]): string[] {
 }
 
 export async function getProductionSuggestions(): Promise<ProductionSuggestions> {
-  const [batchNumbers, locNumbers, designNames, formulas, colors, others] = await Promise.all([
+  const [batchNumbers, locNumbers, designNames, formulas, colors, others, entryNames, entryColors] = await Promise.all([
     distinct("batchNumber"),
     distinct("locNumber"),
     distinct("designName"),
-    prisma.formula.findMany({ select: { id: true, name: true, nameKey: true }, orderBy: { name: "asc" } }),
+    prisma.formula.findMany({ select: { id: true, name: true, nameKey: true }, distinct: ["nameKey"], orderBy: [{ nameKey: "asc" }, { createdAt: "desc" }] }),
     prisma.productionPigment.findMany({
       where: { formulaId: null },
       select: { name: true, nameKey: true },
@@ -45,6 +49,18 @@ export async function getProductionSuggestions(): Promise<ProductionSuggestions>
       select: { name: true, nameKey: true },
       distinct: ["nameKey"],
       orderBy: { nameKey: "asc" },
+    }),
+    prisma.productionMaterial.findMany({
+      where: { itemName: { not: null } },
+      select: { category: true, itemName: true },
+      distinct: ["category", "itemName"],
+      orderBy: { itemName: "asc" },
+    }),
+    prisma.productionMaterial.findMany({
+      where: { color: { not: null } },
+      select: { color: true },
+      distinct: ["color"],
+      orderBy: { color: "asc" },
     }),
   ]);
 
@@ -61,10 +77,38 @@ export async function getProductionSuggestions(): Promise<ProductionSuggestions>
       ...colorNames.map((n) => ({ kind: "color" as const, id: n, name: n })),
     ],
     otherMaterials: uniqueByKey(others).map((n) => ({ kind: "material" as const, id: n, name: n })),
+    materialNames: entryNames.reduce<Record<string, Suggestion[]>>((acc, e) => {
+      (acc[e.category] ??= []).push({ kind: "value", id: e.itemName!, name: e.itemName! });
+      return acc;
+    }, {}),
+    materialColors: valueSuggestions(entryColors.map((c) => c.color!)),
   };
 }
 
 export async function getNextProductionSerialNo(): Promise<number> {
   const { _max } = await prisma.productionRecord.aggregate({ _max: { serialNo: true } });
   return (_max.serialNo ?? 0) + 1;
+}
+
+export interface RecentProduction {
+  id: string;
+  date: string;
+  serialNo: number;
+  batchNumber: string;
+  locNumber: string;
+  designName: string;
+  totalCycles: number;
+  mixersUsed: number;
+  roymixUsed: boolean;
+}
+
+/** The latest saved Daily Production records: by production date, then by
+ *  when they were saved, newest first. */
+export async function getRecentProduction(limit = 10): Promise<RecentProduction[]> {
+  const rows = await prisma.productionRecord.findMany({
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    take: limit,
+    select: { id: true, date: true, serialNo: true, batchNumber: true, locNumber: true, designName: true, totalCycles: true, mixersUsed: true, roymixUsed: true },
+  });
+  return rows.map((r) => ({ ...r, date: r.date.toISOString().slice(0, 10) }));
 }

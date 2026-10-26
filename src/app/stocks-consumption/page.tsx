@@ -24,17 +24,11 @@ export default async function StocksConsumptionPage({
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Stocks and Consumption"
-        description="Pigment/color stock is deducted automatically by Formula Creation and Daily Production. Materials show consumption only."
-      />
+      <PageHeader title="Stocks and Consumption" />
 
       {/* 1. Pigment/Color stock */}
       <section className="card p-5">
-        <h2 className="text-base font-semibold text-pacific-dark">Stock</h2>
-        <p className="mb-4 mt-0.5 text-sm text-gray-600">
-          Add pigments/colors and their available quantity. Adding a name that is already listed adds to its stock.
-        </p>
+        <h2 className="mb-4 text-base font-semibold text-pacific-dark">Stock</h2>
         <StockEntryForm suggestions={data.pigmentSuggestions} />
 
         <h3 className="mb-3 mt-8 text-sm font-semibold text-gray-800">Live Stock</h3>
@@ -51,27 +45,17 @@ export default async function StocksConsumptionPage({
           </>
         )}
         <UntrackedNotice untracked={data.untracked} />
-        <p className="mt-3 text-xs text-gray-500">
-          All figures in kg. Formulas consume each row&apos;s Required Quantity; Daily Production consumes the per-cycle
-          quantity × the cycles it ran.
-        </p>
       </section>
 
       {/* Low stock alerts — pigments/colors only */}
       <section className="card p-5">
-        <h2 className="text-base font-semibold text-pacific-dark">Low Stock Alerts</h2>
-        <p className="mb-4 mt-0.5 text-sm text-gray-600">
-          Pigments/colors only — production materials have no stock and no alerts.
-        </p>
+        <h2 className="mb-4 text-base font-semibold text-pacific-dark">Low Stock Alerts</h2>
         <LowStockAlerts stocks={data.stocks} />
       </section>
 
       {/* 2. Materials — consumption only */}
       <section className="card p-5">
-        <h2 className="text-base font-semibold text-pacific-dark">Materials Used Consumption</h2>
-        <p className="mb-4 mt-0.5 text-sm text-gray-600">
-          From saved Daily Production records. Consumption only — no stock is kept for materials.
-        </p>
+        <h2 className="mb-4 text-base font-semibold text-pacific-dark">Materials Used Consumption</h2>
         <MaterialsConsumption data={data.materials} />
       </section>
 
@@ -83,7 +67,7 @@ export default async function StocksConsumptionPage({
         </div>
         <div className="space-y-6">
           <StockComparisonChart stocks={data.stocks} rangeDays={data.rangeDays} />
-          <div className="grid gap-6 xl:grid-cols-2">
+          <div className="grid gap-6 xl:grid-cols-2 [&>*]:min-w-0">
             <ConsumptionTrendChart trend={data.trend} />
             <MostConsumedChart pigments={data.topPigments} materials={data.topMaterials} rangeDays={data.rangeDays} />
           </div>

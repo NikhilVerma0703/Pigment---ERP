@@ -86,13 +86,11 @@ export function DownloadForm({ months }: { months: { value: string; label: strin
           ))}
         </div>
 
-        {period === "today" && <p className="mt-2 text-sm text-gray-600">Records dated {format(new Date(), "dd MMM yyyy")}.</p>}
         {period === "custom" && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <input type="date" aria-label="From date" className="field-input w-auto" value={from} max={today} onChange={(e) => setFrom(e.target.value)} />
             <span className="text-sm text-gray-500">to</span>
             <input type="date" aria-label="To date" className="field-input w-auto" value={to} min={from} max={today} onChange={(e) => setTo(e.target.value)} />
-            <span className="text-xs text-gray-500">Use the same date twice for a single day.</span>
           </div>
         )}
         {period === "month" && (

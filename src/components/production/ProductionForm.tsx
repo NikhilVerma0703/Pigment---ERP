@@ -10,10 +10,12 @@ import { toast } from "sonner";
 import { saveProduction } from "@/app/pigment-packing/actions";
 import { emptyPigment } from "@/components/production/PigmentTable";
 import { MixerSection } from "@/components/production/MixerSection";
+import { defaultMaterials } from "@/components/production/MaterialsConsumption";
+import { EditBanner } from "@/components/ui/EditBanner";
 import { SuggestCombobox } from "@/components/ui/SuggestCombobox";
-import { MAX_MIXERS, MIXERS, STANDARD_MATERIALS } from "@/lib/production/constants";
+import { MAX_REGULAR_MIXERS, MIXER_SLOTS, ROYMIX_INDEX, ROYMIX_LABEL } from "@/lib/production/constants";
 import type { ProductionSuggestions } from "@/lib/production/queries";
-import { productionInputSchema, type ProductionInput } from "@/lib/production/schema";
+import { activeMixerSlots, productionInputSchema, type ProductionInput } from "@/lib/production/schema";
 
 function defaults(serialNo: number, date = format(new Date(), "yyyy-MM-dd")): ProductionInput {
   return {
@@ -25,13 +27,15 @@ function defaults(serialNo: number, date = format(new Date(), "yyyy-MM-dd")): Pr
     totalCycles: "",
     // "" until entered; the mixer sections open then.
     mixersUsed: "",
-    mixers: MIXERS.map((m) => ({
-      mixer: m.value,
+    roymixUsed: "NO",
+    // Every slot exists from the start (regular 1 … MAX, then Roymix); only
+    // the active ones are shown, validated and saved.
+    mixers: Array.from({ length: MIXER_SLOTS }, () => ({
       pigments: [emptyPigment()],
       cycleTimeChanged: "NO",
       changeCount: "",
       changes: [],
-      materials: STANDARD_MATERIALS.map((name) => ({ name, isStandard: true, unit: "KG", quantity: "" })),
+      materials: defaultMaterials(),
     })),
   };
 }
@@ -45,16 +49,25 @@ const TEXT_FIELDS = [
 export function ProductionForm({
   suggestions,
   nextSerialNo,
+  editing,
 }: {
   suggestions: ProductionSuggestions;
   nextSerialNo: number;
+  /** A saved record opened with Edit: the form starts with its values and
+   *  saving updates that record. */
+  editing?: { id: string; serialNo: number; batchNumber: string; values: ProductionInput };
 }) {
   const router = useRouter();
   const [saving, startSaving] = useTransition();
+  const materialSuggestions = {
+    others: suggestions.otherMaterials,
+    names: suggestions.materialNames,
+    colors: suggestions.materialColors,
+  };
 
   const methods = useForm<ProductionInput>({
     resolver: zodResolver(productionInputSchema),
-    defaultValues: defaults(nextSerialNo),
+    defaultValues: editing?.values ?? defaults(nextSerialNo),
     mode: "onTouched",
   });
   const {
@@ -67,17 +80,26 @@ export function ProductionForm({
     formState: { errors },
   } = methods;
 
-  // Mixer sections show only for a valid count (1 to MAX_MIXERS).
+  // Mixer 1 … Mixer N, plus the Roymix Mixer when Roymix Used is Yes.
   const mixersRaw = (useWatch({ control, name: "mixersUsed" }) ?? "").trim();
-  const mixersUsed = /^\d+$/.test(mixersRaw) && Number(mixersRaw) <= MAX_MIXERS ? Number(mixersRaw) : 0;
+  const roymixUsed = useWatch({ control, name: "roymixUsed" });
+  const countValid = /^\d+$/.test(mixersRaw) && Number(mixersRaw) <= MAX_REGULAR_MIXERS;
+  const slots = countValid ? activeMixerSlots(mixersRaw, roymixUsed) : [];
+
   const onSubmit = (values: ProductionInput) =>
     startSaving(async () => {
-      const result = await saveProduction(values);
+      const result = await saveProduction(values, editing?.id);
       if (!result.ok) {
         for (const [field, message] of Object.entries(result.fieldErrors ?? {})) {
           setError(field as FieldPath<ProductionInput>, { type: "server", message });
         }
         toast.error(result.error);
+        return;
+      }
+      if (editing) {
+        toast.success(`Daily production updated (S.No. ${result.serialNo})`);
+        router.replace("/pigment-packing", { scroll: false });
+        router.refresh();
         return;
       }
       toast.success(`Daily production saved (S.No. ${result.serialNo})`);
@@ -101,6 +123,10 @@ export function ProductionForm({
           <h1 className="text-2xl font-bold tracking-tight text-pacific-dark md:text-3xl">Daily Production</h1>
           <p className="mt-1 text-sm text-gray-600">Pigment Packing Details</p>
         </div>
+
+        {editing && (
+          <EditBanner label={`batch ${editing.batchNumber} (S.No. ${editing.serialNo})`} cancelHref="/pigment-packing" />
+        )}
 
         {/* 1. Basic production details */}
         <section className="card p-5">
@@ -166,55 +192,60 @@ export function ProductionForm({
                 type="text"
                 inputMode="numeric"
                 autoComplete="off"
-                placeholder="e.g. 3"
+                placeholder="e.g. 4"
                 className="field-input tabular-nums"
                 aria-invalid={!!errors.mixersUsed || undefined}
                 {...register("mixersUsed")}
               />
-              {errors.mixersUsed ? (
-                <p className="field-error">{errors.mixersUsed.message}</p>
-              ) : (
-                <p className="mt-1 text-xs text-gray-500">1 to {MAX_MIXERS}: {MIXERS.map((m) => m.label).join(", ")}</p>
-              )}
+              {errors.mixersUsed && <p className="field-error">{errors.mixersUsed.message}</p>}
+            </div>
+            <div>
+              <label htmlFor="roymixUsed" className="field-label">Roymix Used</label>
+              <select id="roymixUsed" className="field-input" {...register("roymixUsed")}>
+                <option value="NO">No</option>
+                <option value="YES">Yes</option>
+              </select>
             </div>
           </div>
         </section>
 
         {/* 2. Mixers */}
-        {mixersUsed === 0 ? (
+        {slots.length === 0 ? (
           <div className="card border-dashed px-6 py-10 text-center text-sm text-gray-500">
             {mixersRaw === "" ? (
               <>Enter the <span className="font-semibold text-gray-700">Number of Mixers Used</span> to open the mixer sections.</>
+            ) : !countValid ? (
+              <>Number of Mixers Used must be from 0 to {MAX_REGULAR_MIXERS}.</>
             ) : (
-              <>Number of Mixers Used must be from 1 to {MAX_MIXERS}.</>
+              <>Enter at least 1 mixer, or set <span className="font-semibold text-gray-700">Roymix Used</span> to Yes.</>
             )}
           </div>
         ) : (
-          MIXERS.slice(0, mixersUsed).map((m, i) => (
+          slots.map((i) => (
             <MixerSection
-              key={m.value}
+              key={i}
               index={i}
-              label={m.label}
+              label={i === ROYMIX_INDEX ? ROYMIX_LABEL : `Mixer ${i + 1}`}
               pigmentSuggestions={suggestions.pigments}
-              materialSuggestions={suggestions.otherMaterials}
+              materialSuggestions={materialSuggestions}
             />
           ))
         )}
 
         {/* 3. Save */}
-        {mixersUsed > 0 && (
+        {slots.length > 0 && (
           <div className="flex flex-wrap items-center justify-end gap-3">
             <button
               type="button"
               className="btn-secondary"
               disabled={saving}
-              onClick={() => reset(defaults(nextSerialNo, getValues("date")))}
+              onClick={() => reset(editing ? editing.values : defaults(nextSerialNo, getValues("date")))}
             >
-              <RotateCcw className="h-4 w-4" /> Clear
+              <RotateCcw className="h-4 w-4" /> {editing ? "Discard changes" : "Clear"}
             </button>
             <button type="submit" className="btn-primary" disabled={saving}>
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {saving ? "Saving…" : "Save Production Record"}
+              {saving ? "Saving…" : editing ? "Update Production Record" : "Save Production Record"}
             </button>
           </div>
         )}

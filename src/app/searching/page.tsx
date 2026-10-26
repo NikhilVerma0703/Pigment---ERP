@@ -6,7 +6,7 @@ import { SearchFilters, type FilterField } from "@/components/search/SearchFilte
 import { FormulaResults, MaterialResults, PigmentResults, ProductionResults } from "@/components/search/SearchResults";
 import { formatQty, type Unit } from "@/lib/formula/calc";
 import { FORMULA_TYPE_OPTIONS } from "@/lib/formula/constants";
-import { MIXERS } from "@/lib/production/constants";
+import { MIXER_FILTER_OPTIONS } from "@/lib/production/constants";
 import { parseFilters, parseTab, SEARCH_TABS, type SearchTab } from "@/lib/search/filters";
 import {
   getSearchSuggestions,
@@ -61,7 +61,7 @@ function fieldsFor(tab: SearchTab, s: SearchSuggestions): FilterField[] {
         { key: "material", label: "Material Name", type: "suggest", suggestions: s.materials, placeholder: "e.g. Grit, Resin" },
         { key: "batch", label: "Batch Number", type: "suggest", suggestions: s.batches },
         { key: "loc", label: "LOC Number", type: "suggest", suggestions: s.locs },
-        { key: "mixer", label: "Mixer", type: "select", options: MIXERS.map((m) => ({ value: m.value, label: m.label })) },
+        { key: "mixer", label: "Mixer", type: "select", options: MIXER_FILTER_OPTIONS },
         DATES,
       ];
   }
@@ -120,13 +120,6 @@ async function results(tab: SearchTab, filters: Record<string, string>) {
   }
 }
 
-const NOTES: Record<SearchTab, string> = {
-  formulas: "Search saved formulas by name (partial matches), type, an ingredient they use, or date.",
-  production: "Combine any filters — e.g. Batch Number + Date + Design — or use just one.",
-  pigments: "Stock added and every consumption, with the stock balance after each transaction. All quantities in kg.",
-  materials: "Consumption only — materials have no stock. All quantities in kg.",
-};
-
 export default async function SearchingPage({
   searchParams,
 }: {
@@ -139,7 +132,7 @@ export default async function SearchingPage({
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Searching" description="Find saved formulas, production records, pigment stock movements and material consumption." />
+      <PageHeader title="Searching" />
 
       <nav className="flex flex-wrap gap-2" aria-label="Search sections">
         {SEARCH_TABS.map((t, i) => {
@@ -161,8 +154,6 @@ export default async function SearchingPage({
           );
         })}
       </nav>
-
-      <p className="text-sm text-gray-600">{NOTES[tab]}</p>
 
       <SearchFilters tab={tab} fields={fieldsFor(tab, suggestions)} applied={filters} resultCount={result.count} />
 

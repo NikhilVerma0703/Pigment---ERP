@@ -50,7 +50,7 @@ export default async function ReportsPage({
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Reports and Downloads" description="Production and consumption summaries from the saved records, and Excel downloads." />
+      <PageHeader title="Reports and Downloads" />
 
       <nav className="flex flex-wrap gap-2" aria-label="Report sections">
         {REPORT_TABS.map((t, i) => {
@@ -73,7 +73,6 @@ export default async function ReportsPage({
         })}
       </nav>
 
-      {tab !== "downloads" && <p className="text-sm text-gray-600">Showing {rangeLabel}.</p>}
       {body}
     </div>
   );

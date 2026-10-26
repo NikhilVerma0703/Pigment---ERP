@@ -61,7 +61,9 @@ model Formula {
   serialNo    Int         @unique @map("serial_no")
   formulaType FormulaType @map("formula_type")
   name        String
-  nameKey     String      @unique @map("name_key")
+  /// Not unique: the same formula can be created again for each new production;
+  /// every creation adds its Total Quantity Required to that formula's stock.
+  nameKey     String      @map("name_key")
 
   mixingHours   Int @default(0) @map("mixing_hours")
   mixingMinutes Int @default(0) @map("mixing_minutes")
@@ -78,6 +80,7 @@ model Formula {
   productionPigments ProductionPigment[]
 
   @@index([date])
+  @@index([nameKey])
   @@map("formulas")
 }
 
@@ -112,15 +115,15 @@ model FormulaItem {
 // Pigment Packing Details — Daily Production
 //
 // One ProductionRecord per Daily Production form. It holds one
-// ProductionMixer per mixer used (Mixer-1, Mixer-2, Roymix, in that order).
+// ProductionMixer per mixer used: the numbered regular mixers (Mixer 1 … Mixer N,
+// N = "Number of Mixers Used") and, when "Roymix Used" is Yes, one Roymix Mixer.
 // Each mixer has its pigment/colour rows, its materials consumption rows and,
 // when the cycle time changed, one ProductionCycleChange per cycle range with
 // that range's own pigment rows.
 // ============================================================================
 
-enum MixerType {
-  MIXER_1
-  MIXER_2
+enum MixerKind {
+  REGULAR
   ROYMIX
 }
 
@@ -132,7 +135,9 @@ model ProductionRecord {
   locNumber   String   @map("loc_number")
   designName  String   @map("design_name")
   totalCycles Int      @map("total_cycles")
+  /// Number of regular mixers (Mixer 1 … Mixer N); the Roymix Mixer is not counted.
   mixersUsed  Int      @map("mixers_used")
+  roymixUsed  Boolean  @default(false) @map("roymix_used")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -146,7 +151,9 @@ model ProductionRecord {
 model ProductionMixer {
   id               String    @id @default(cuid())
   recordId         String    @map("record_id")
-  mixer            MixerType
+  /// REGULAR: "Mixer {position}". ROYMIX: the Roymix Mixer (position 1).
+  kind             MixerKind
+  position         Int
   cycleTimeChanged Boolean   @default(false) @map("cycle_time_changed")
   changeCount      Int       @default(0) @map("change_count")
 
@@ -155,7 +162,7 @@ model ProductionMixer {
   cycleChanges ProductionCycleChange[]
   materials    ProductionMaterial[]
 
-  @@unique([recordId, mixer])
+  @@unique([recordId, kind, position])
   @@map("production_mixers")
 }
 
@@ -199,17 +206,40 @@ model ProductionPigment {
   @@map("production_pigments")
 }
 
-// Materials consumption. The six standard materials (Grit … Silane) are
-// isStandard; "+ Add/Others" rows are not. Only rows with a quantity are saved.
+enum MaterialCategory {
+  GRIT
+  POWDER
+  RESIN
+  CATALYST
+  COBALT
+  SILANE
+  OTHER
+}
+
+// Materials consumption, one row per entry (a material can have several
+// entries, e.g. two grit sizes). `name` is the material ("Grit", or the
+// custom name for OTHER) and is what totals group by; size / itemName / color
+// describe the entry. Catalyst, Cobalt and Silane store their percentage and
+// the quantity calculated from it (percent / 100 × the mixer's resin kg).
+// Consumption only — materials have no stock.
 model ProductionMaterial {
-  id         String          @id @default(cuid())
-  mixerId    String          @map("mixer_id")
-  lineNo     Int             @map("line_no")
+  id         String           @id @default(cuid())
+  mixerId    String           @map("mixer_id")
+  lineNo     Int              @map("line_no")
+  category   MaterialCategory @default(OTHER)
   name       String
-  nameKey    String          @map("name_key")
-  isStandard Boolean         @default(false) @map("is_standard")
+  nameKey    String           @map("name_key")
+  isStandard Boolean          @default(false) @map("is_standard")
+  /// Grit / Powder size, e.g. "0.1–0.4", "400#".
+  size       String?
+  /// The entry's own name, e.g. a grit name or a resin name.
+  itemName   String?          @map("item_name")
+  /// Grit / Powder colour.
+  color      String?
+  /// Catalyst / Cobalt / Silane percentage of the mixer's resin.
+  percent    Decimal?         @db.Decimal(9, 3)
   unit       MeasurementUnit
-  quantity   Decimal         @db.Decimal(18, 3)
+  quantity   Decimal          @db.Decimal(18, 3)
 
   mixer ProductionMixer @relation(fields: [mixerId], references: [id], onDelete: Cascade)
 
@@ -245,9 +275,22 @@ model PigmentStock {
   @@map("pigment_stocks")
 }
 
+enum StockEntryKind {
+  INITIAL
+  ADDITION
+  ADJUSTMENT
+}
+
+// A manual stock movement: the first quantity entered for a pigment (INITIAL),
+// later additions (ADDITION), and signed corrections (ADJUSTMENT, may be
+// negative). Formula production and Daily Production consumption are not
+// stored here; they are read from their own records, so re-reading or
+// re-saving never adds or deducts twice.
 model PigmentStockEntry {
   id         String          @id @default(cuid())
   pigmentId  String          @map("pigment_id")
+  kind       StockEntryKind  @default(ADDITION)
+  note       String?
   date       DateTime        @db.Date
   /// As entered.
   unit       MeasurementUnit

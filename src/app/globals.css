@@ -12,6 +12,33 @@
 
 html, body { max-width: 100vw; }
 
+/* Never scroll the page sideways. `clip` (unlike `hidden`) creates no scroll
+ * container, so sticky headers keep working; wide tables scroll inside their
+ * own .overflow-x-auto wrapper instead. */
+body { overflow-x: clip; }
+
+/* An absolutely positioned child (e.g. a table header's sr-only label) is
+ * placed against its nearest positioned ancestor. Without this, the ones inside
+ * a scrolling table escaped the scroll box and widened the whole page. */
+.overflow-x-auto, .overflow-auto { position: relative; -webkit-overflow-scrolling: touch; }
+
+/* Wide tables: scroll smoothly with a finger and keep cells on one line where
+ * the column asks for it, rather than squeezing text letter by letter. */
+table { font-variant-numeric: tabular-nums; }
+
+/* ---------- touch devices (phones & tablets) ----------
+ * `screen and` so printouts never inherit the large tap targets. */
+@media screen and (pointer: coarse) {
+  /* 16px stops mobile browsers zooming in when a field is focused. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="color"]),
+  select:not(.text-base):not(.text-lg),
+  textarea:not(.text-base):not(.text-lg) { font-size: 16px; min-height: 44px; }
+  /* Comfortable tap targets for every button and button-styled link. */
+  button, a.btn-primary, a.btn-secondary, summary, [role="tab"], [role="option"] { min-height: 44px; }
+  input[type="checkbox"], input[type="radio"] { min-width: 20px; min-height: 20px; }
+  [role="option"] { display: flex; align-items: center; }
+}
+
 body {
   background:
     radial-gradient(1200px 600px at 100% -10%, rgba(15,76,92,0.06), transparent 60%),

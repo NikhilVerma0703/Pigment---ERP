@@ -56,7 +56,7 @@ export const SuggestCombobox = forwardRef<HTMLInputElement, Props>(function Sugg
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const [rect, setRect] = useState<{ left: number; width: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
 
   const setRefs = (el: HTMLInputElement | null) => {
     inputRef.current = el;
@@ -87,7 +87,20 @@ export const SuggestCombobox = forwardRef<HTMLInputElement, Props>(function Sugg
     const el = inputRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setRect({ left: r.left, top: r.bottom + 4, width: Math.max(r.width, 260) });
+    // Stay on screen: never wider than the viewport, shifted left when the
+    // field is near the right edge, and opened upwards when there is little
+    // room below (e.g. a field near the bottom of a phone screen).
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const width = Math.min(Math.max(r.width, 260), vw - 16);
+    const left = Math.max(8, Math.min(r.left, vw - width - 8));
+    const below = vh - r.bottom - 12;
+    const above = r.top - 12;
+    setRect(
+      below < 200 && above > below
+        ? { left, width, bottom: vh - r.top + 4, maxHeight: Math.min(288, above) }
+        : { left, width, top: r.bottom + 4, maxHeight: Math.min(288, Math.max(below, 120)) },
+    );
   }, []);
 
   useLayoutEffect(() => {
@@ -170,8 +183,8 @@ export const SuggestCombobox = forwardRef<HTMLInputElement, Props>(function Sugg
         <ul
           id={listId}
           role="listbox"
-          style={{ left: rect.left, top: rect.top, width: rect.width }}
-          className="fixed z-50 max-h-72 overflow-auto rounded-lg border border-gray-200 bg-white py-1 text-sm shadow-lg"
+          style={{ left: rect.left, top: rect.top, bottom: rect.bottom, width: rect.width, maxHeight: rect.maxHeight }}
+          className="fixed z-50 overflow-auto rounded-lg border border-gray-200 bg-white py-1 text-sm shadow-lg"
           // Keep focus in the input while clicking an option.
           onMouseDown={(e) => e.preventDefault()}
         >
